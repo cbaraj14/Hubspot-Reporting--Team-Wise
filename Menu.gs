@@ -60,7 +60,7 @@ function onOpen() {
       .addSeparator()
       .addItem('5. Generate Summary', 'generateSummaryReport')
       .addItem('6. Run Sales Team Report', 'salesGenerateSalesTeamReport')
-      .addItem('7. Run CS Team Report', 'generateCSReport')
+      .addItem('7. Run CS Team Report', 'CS_forecastRevenue')
       .addSeparator()
       //.addItem('3. Sync Missing Contacts', 'syncMissingContacts')
       .addToUi();

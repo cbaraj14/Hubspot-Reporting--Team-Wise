@@ -149,11 +149,22 @@ const EXCLUDED_POC_TEAMS = ["Sales Team", "C-Suite",""];
 * ==============================================================================
 */
 function CS_forecastRevenue() {
+ // Initialize progress logger
+ initProgressLogger('CS_Team_Report');
+ logStart('CS Team Revenue Forecast Report');
+ 
  const ss = SpreadsheetApp.getActiveSpreadsheet();
  const sourceSheet = ss.getSheetByName(CSSUMMARY_CONFIG.SOURCE_SHEET);
  const configSheet = ss.getSheetByName(CSSUMMARY_CONFIG.CONFIG_SHEET);
 
- if (!sourceSheet || !configSheet) throw new Error("Required sheets not found.");
+ if (!sourceSheet || !configSheet) {
+   const errorMsg = "Required sheets not found.";
+   logError(errorMsg);
+   throw new Error(errorMsg);
+ }
+
+ logInfo(`Reading data from ${CSSUMMARY_CONFIG.SOURCE_SHEET} sheet`);
+ logInfo(`Using configuration from ${CSSUMMARY_CONFIG.CONFIG_SHEET} sheet`);
 
  // 1. DATES & FY BOUNDARIES
  const rawReportDate = new Date(configSheet.getRange(CSSUMMARY_CONFIG.REPORT_DATE_CELL).getValue());
@@ -167,10 +178,16 @@ function CS_forecastRevenue() {
  const reportEndDate = new Date(rawEndDate.getFullYear(), rawEndDate.getMonth(), 1);
  const priorMonthDate = new Date(reportDate.getFullYear(), reportDate.getMonth() - 1, 1);
 
+ logInfo(`Report Date: ${formatDateToISO(reportDate)}`);
+ logInfo(`Report End Date: ${formatDateToISO(reportEndDate)}`);
+ logInfo(`Current FY: ${getFYString(reportDate)}`);
+
  // 2. LOAD DATA
  const allData = sourceSheet.getDataRange().getValues();
  const rawHeaders = allData[0];
  const dataRows = allData.slice(1);
+ 
+ logInfo(`Loaded ${dataRows.length} data rows from source sheet`);
 
  // 3. GENERATE HEADERS
  const existingMonths = [];
@@ -253,6 +270,9 @@ function CS_forecastRevenue() {
  finalOutput.unshift(headerRow);
 
  writeAndFormatSummaryCS(ss, finalOutput, sortedMonths, currentFYStart, reportDate);
+ 
+ logSuccess(`✅ CS Team Report completed: ${finalOutput.length - 1} companies processed`);
+ printExecutionSummary();
 }
 
 /**
@@ -261,6 +281,8 @@ function CS_forecastRevenue() {
 * ==============================================================================
 */
 function writeAndFormatSummaryCS(ss, finalOutput, sortedMonths, currentFYStart, reportDate) {
+ logInfo(`📝 Writing report to target sheet: ${CSSUMMARY_CONFIG.CSSUMMARY_SHEET_NAME}`);
+ 
  let sheet = ss.getSheetByName(CSSUMMARY_CONFIG.CSSUMMARY_SHEET_NAME) || ss.insertSheet(CSSUMMARY_CONFIG.CSSUMMARY_SHEET_NAME);
  sheet.clear();
  
@@ -316,41 +338,23 @@ function writeAndFormatSummaryCS(ss, finalOutput, sortedMonths, currentFYStart, 
    }
  });
 
+ logDebug(`Writing ${lastRow} rows x ${lastCol} columns`);
+ 
  sheet.autoResizeColumns(1, lastCol);
  if (sheet.getFilter()) sheet.getFilter().remove();
  sheet.getRange(1, 1, lastRow, lastCol).createFilter();
+ 
+ logSuccess(`✅ Report written: ${lastRow - 1} rows, ${lastCol} columns (including ${sortedMonths.length} months) with auto-filter`);
 }
 
 /**
 * ==============================================================================
-* HELPERS
+* LEGACY FUNCTION - MAINTAINED FOR BACKWARD COMPATIBILITY
 * ==============================================================================
+* This function now delegates to the unified helper for compatibility.
+* Use generateCSReport() directly or CS_forecastRevenue() for new code.
 */
-function columnToLetter(c) {
- let letter = "";
- while (c > 0) {
-   let t = (c - 1) % 26;
-   letter = String.fromCharCode(t + 65) + letter;
-   c = (c - t - 1) / 26;
- }
- return letter;
+function generateCSReport() {
+  logInfo('Legacy function generateCSReport() called, redirecting to CS_forecastRevenue()');
+  return CS_forecastRevenue();
 }
-
-function findDateColumnIndex(headers, target) {
- const tStr = formatDateToYYYYMMM(target);
- return headers.findIndex(h => formatDateToYYYYMMM(h) === tStr);
-}
-
-function formatDateToYYYYMMM(d) {
- if (!(d instanceof Date)) return String(d);
- const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
- return `${d.getFullYear()}-${months[d.getMonth()]}`;
-}
-
-function parseNumeric(v) {
- if (typeof v === 'number') return v;
- const n = parseFloat(String(v).replace(/[$,\s]/g, ''));
- return isNaN(n) ? 0 : n;
-}
-
-function cleanString(v) { return v ? String(v).trim() : ""; }
