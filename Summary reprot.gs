@@ -1,5 +1,69 @@
 /**
  * ============================================================================
+ * SUMMARY REPORT GENERATOR
+ * ============================================================================
+ * 
+ * Creates a comprehensive revenue report showing ALL companies without filtering.
+ * 
+ * PURPOSE:
+ * - Executive dashboard for complete portfolio view
+ * - Monthly revenue breakdown from Report Start to Report End
+ * - POC Team classification (Sales/CS/C-Suite/Transferred)
+ * - Sparkline trend visualizations
+ * - Realized vs Total revenue calculations
+ * 
+ * DATA SOURCE:
+ * - Reads from TEMP_DATA sheet (pre-computed cache)
+ * - Filters to Payment Pipeline only
+ * - Date range from Config_sheet E8 (start) and E9 (end)
+ * 
+ * OUTPUT COLUMNS:
+ * 1. Company Name
+ * 2. Revenue Trend (Sparkline)
+ * 3. Revenue Type (Recurring/R-OTP/OTP)
+ * 4. Client Age (New/Old/Future)
+ * 5. First Revenue Fiscal Year
+ * 6. POC Team (Sales/CS/C-Suite/etc.)
+ * 7-N. Monthly columns (YYYY-MMM format)
+ * N+1. Realized Revenue (This FY) - actual payments in current FY
+ * N+2. Total Revenue - sum of all months in report period
+ * 
+ * POC TEAM LOGIC (Hierarchical):
+ * 1. Payment Pipeline Check: 100% Sales or 100% CS → assign accordingly
+ * 2. All Pipelines Historical: All Sales or All CS → assign accordingly  
+ * 3. Current FY Tie-breaker: Purely Sales or CS this FY → assign accordingly
+ * 4. Mixed Current FY: "CS and Sales (Transferred this FY)"
+ * 5. Default: "CS & Sales" or "C-Suite" (no team flags)
+ * 
+ * FORMATTING:
+ * - Light yellow background for rows with current FY activity
+ * - Grey font for months outside current FY
+ * - Green font for month-over-month increase (>10% or >$50)
+ * - Red font for month-over-month decrease (>10% or >$50)
+ * - Currency format: $###,###
+ * - Zero values displayed as "-"
+ * - Frozen first row and first 3 columns
+ * - Auto-filter on headers
+ * - Subtotal row at bottom (filter-safe using SUBTOTAL function)
+ * 
+ * SORTING:
+ * - Primary: First Revenue Fiscal Year (oldest first)
+ * - Secondary: Company Name (alphabetical)
+ * 
+ * USAGE:
+ * From Menu: "5. Generate Summary"
+ * Or call: generateSummaryReport()
+ * 
+ * PREREQUISITES:
+ * - TEMP_DATA sheet must exist (run tempUpdateTempSheet first)
+ * - Config_sheet with dates in E8 and E9
+ * 
+ * See README.md for complete documentation.
+ * ============================================================================
+ */
+
+/**
+ * ============================================================================
  * 1) CONFIGURATION (MODULAR CONTROL PANEL)
  * ============================================================================
  */

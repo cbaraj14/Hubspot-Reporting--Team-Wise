@@ -1,5 +1,117 @@
 /**
 * ==============================================================================
+* CS TEAM REPORT GENERATOR WITH REVENUE FORECASTING
+* ==============================================================================
+* 
+* Creates a Customer Success-focused revenue report with extended forecasting
+* capabilities for recurring revenue accounts.
+* 
+* PURPOSE:
+* - Monitor customer health and retention
+* - Forecast recurring revenue through fiscal year end
+* - Track account ownership by CS team
+* - Support renewal and expansion planning
+* - Identify at-risk accounts (zero forecast months)
+* 
+* DATA SOURCE:
+* - Reads from Summary Report (which uses TEMP_DATA)
+* - Filters to CS team-owned accounts only
+* - Date range from Config_sheet E6 (Report Date) and E9 (Report End)
+* 
+* KEY DIFFERENCE FROM SALES REPORT:
+* - NO 12-month forecast limit (extends to FY end or Report End Date)
+* - Focuses on customer retention vs new acquisition
+* - Excludes "Sales Team" and "C-Suite" POC classifications
+* - Uses different forecasting horizon
+* 
+* FILTERING LOGIC:
+* 1. POC Team Filter
+*    - EXCLUDES: "Sales Team", "C-Suite", blank
+*    - INCLUDES: "CS Team", "CS & Sales", "CS and Sales (Transferred this FY)"
+* 2. CS Team Membership (Optional)
+*    - If CSHEETSFILTER_CELL (E7) = TRUE, require "Is CS Team Member" = TRUE
+* 
+* FORECASTING LOGIC (Recurring Revenue Only):
+* 
+* Step 1: Report Month Check
+*    - If Recurring Revenue in Report Month > 0
+*    - Use that amount for ALL future months through Report End or FY end
+* 
+* Step 2: Prior Month Fallback
+*    - If Report Month = 0, check month before Report Month
+*    - If prior month > 0, use that amount for Report Month + future
+* 
+* Step 3: No Revenue Case
+*    - If both Report Month and prior month = 0
+*    - Do NOT forecast (all future months remain 0)
+* 
+* IMPORTANT: No averaging, interpolation, or trend analysis.
+* Only strict carry-forward of last known payment amount.
+* 
+* REVENUE CALCULATIONS:
+* 
+* 1. Realized Revenue (This FY)
+*    - Sum of actual payments within current fiscal year
+*    - Only includes months ≤ Report Date
+*    - Excludes all forecasted amounts
+* 
+* 2. Forecasted Revenue (This FY)
+*    - Realized Revenue +
+*    - Forecasted recurring revenue from Report Month through FY end
+*    - Only for Recurring companies
+* 
+* 3. Total Report Period Revenue
+*    - Sum of all monthly columns in report window
+*    - Includes both actual and forecasted amounts
+*    - Spans Report Start to Report End Date
+* 
+* OUTPUT COLUMNS:
+* 1. Company Name
+* 2. Revenue Trend (Sparkline)
+* 3. Revenue Type (Recurring/R-OTP/OTP)
+* 4. Client Age (New/Old/Future)
+* 5. First Revenue Fiscal Year
+* 6. POC Team
+* 7-N. Monthly columns (YYYY-MMM format)
+* N+1. Realized Revenue (FY) Source - actual payments only
+* N+2. Forecasted Revenue This FY - includes forecast
+* N+3. Total Revenue for the period - full report window
+* 
+* FORMATTING:
+* - Grey font for ALL forecasted months (even in current FY)
+* - Grey font for months outside current FY
+* - Light yellow background for rows with current FY activity
+* - Green/Red trend colors for ACTUAL months only (not forecast)
+* - Currency format: $###,###
+* - Zero values displayed as "-"
+* - Frozen first row and first 2 columns
+* - Auto-filter on headers
+* - Subtotal row at bottom
+* 
+* CONFIGURATION CELLS (Config_sheet):
+* E6 = Report Date (Report Month for forecasting)
+* E9 = Report End Date (forecast horizon)
+* E7 = CS Team Filter (optional checkbox)
+* 
+* USAGE:
+* From Menu: "7. Run CS Team Report"
+* Or call: CS_forecastRevenue()
+* 
+* PREREQUISITES:
+* - Summary Report must exist and be up-to-date
+* - Config_sheet with dates in E6 and E9
+* - CS_team_Members sheet (if using E7 filter)
+* 
+* PERFORMANCE NOTE:
+* This report reads from Summary Report (already aggregated) rather than
+* TEMP_DATA, making it very fast even with large datasets.
+* 
+* See README.md for complete documentation and forecasting examples.
+* ==============================================================================
+*/
+
+/**
+* ==============================================================================
 * CONFIGURATION
 * ==============================================================================
 */

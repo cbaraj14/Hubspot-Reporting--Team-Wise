@@ -1,5 +1,58 @@
 /**
 * ============================================================================
+* TEMP SHEET MODULE - DATA CLASSIFICATION & ENRICHMENT ENGINE
+* ============================================================================
+* 
+* This module processes raw deal data and creates a pre-computed cache with
+* advanced classifications. This eliminates redundant calculations and makes
+* reports run 10-20x faster.
+* 
+* KEY OPERATIONS:
+* 1. Deduplication by Deal ID (keeps most recent Last Modified Date)
+* 2. Revenue Type Classification (Recurring/R-OTP/OTP)
+* 3. Client Age Classification (New/Old/Future)
+* 4. Team Attribution (Sales/CS membership flags)
+* 5. Fiscal Year Calculations
+* 6. First Revenue Month/FY tracking
+* 
+* CLASSIFICATION LOGIC:
+* 
+* Revenue Type:
+*   - Recurring: Deal name has keywords OR ≥8 months in one FY
+*   - R-OTP: >5 total months (but not Recurring)
+*   - OTP: Everything else
+* 
+* Client Age:
+*   - New: First payment in current FY
+*   - Old: First payment before current FY
+*   - Future: First payment after Report Date
+*   - Prospect: No payment history
+* 
+* Team Attribution:
+*   - Checks Owner ID against Sales_team_Members and CS_team_Members sheets
+*   - Tracks revenue attribution by team
+*   - Identifies transferred accounts
+* 
+* OUTPUT:
+* Creates hidden "TEMP_DATA" sheet with 25+ columns including all source
+* data plus computed classifications. All reports read from this cache.
+* 
+* PERFORMANCE:
+* - Batch writing (500 rows at a time)
+* - Hidden sheet to avoid UI lag
+* - Indexed lookups for fast access
+* - Run once, use many times
+* 
+* USAGE:
+* Run tempUpdateTempSheet() before generating any reports.
+* This is typically done automatically or via Menu option 4.
+* 
+* See README.md for complete documentation.
+* ============================================================================
+*/
+
+/**
+* ============================================================================
 * 1) TEMP CONFIGURATION OBJECT
 * ============================================================================
 */

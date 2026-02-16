@@ -1,6 +1,33 @@
 /**
- * CONFIGURATION & GLOBAL VARIABLES
- * Ensure these match your environment
+ * ============================================================================
+ * HUBSPOT SYNC MODULE
+ * ============================================================================
+ * 
+ * This module handles all HubSpot API interactions for importing deal data.
+ * 
+ * KEY FEATURES:
+ * - Syncs deals from 3 pipelines (Sales, CS, Payment)
+ * - Batch processing with rate limiting (100 deals per batch, 300ms delay)
+ * - Automatic deduplication by Deal ID
+ * - Association enrichment (companies, contacts, owners)
+ * - Incremental updates based on last modified date
+ * 
+ * MENU FUNCTIONS:
+ * - syncHubSpotDeals()          → Import new/updated deals from HubSpot
+ * - syncMissingCompanies()      → Fill missing company associations
+ * - syncMissingContacts()       → Fill missing contact associations
+ * - updateLastModifiedForExistingDeals() → Refresh last modified dates
+ * 
+ * CONFIGURATION:
+ * - Uses CONFIG object from Config file
+ * - Requires HUBSPOT_TOKEN to be set
+ * - Respects API rate limits with exponential backoff
+ * 
+ * DATA FLOW:
+ * HubSpot API → Pipeline Sheets (Sales/CS/Payment) → Temp Sheet → Reports
+ * 
+ * See README.md for complete documentation.
+ * ============================================================================
  */
 
 /**
