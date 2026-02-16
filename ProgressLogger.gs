@@ -179,25 +179,31 @@ function updateProgress(module, status, current = null, total = null) {
  * @param {string} message - Progress message
  */
 function updateProgressSheet(sheet, message) {
-  if (!sheet) {
+  let progressSheet = sheet;
+  if (!progressSheet) {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    progressSheet = ss ? getOrCreateProgressSheet(ss) : null;
+  }
+
+  if (!progressSheet) {
     logWarn('Progress sheet not available');
     return;
   }
 
-  ensureProgressSheetHeaders(sheet);
+  ensureProgressSheetHeaders(progressSheet);
   
   const timestamp = getCurrentTimestamp();
   
   try {
-    sheet.insertRows(2, 1);
+    progressSheet.insertRows(2, 1);
     
     const rowValues = [[timestamp, PROGRESS_STATE.moduleName, 'INFO', message]];
-    sheet.getRange(2, 1, 1, rowValues[0].length).setValues(rowValues);
+    progressSheet.getRange(2, 1, 1, rowValues[0].length).setValues(rowValues);
     
     const maxRows = 1001;
-    const lastRow = sheet.getLastRow();
+    const lastRow = progressSheet.getLastRow();
     if (lastRow > maxRows) {
-      sheet.deleteRows(maxRows + 1, lastRow - maxRows);
+      progressSheet.deleteRows(maxRows + 1, lastRow - maxRows);
     }
     
     logInfo(`Progress updated: ${message}`);
