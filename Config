@@ -1,0 +1,127 @@
+// ============================================================================
+// 1) CONFIGURATION (CONSOLIDATED & FIXED)
+// ============================================================================
+const CONFIG = (() => {
+  // Canonical pipeline mapping
+  const PIPELINE_MAP = {
+    '70710959':  'Sales Pipeline',
+    '679755281': 'CS Pipeline',
+    'default':   'Payment Pipeline' // The "Source of Truth" for revenue
+  };
+
+  // Derived source sheets list
+  const SOURCE_SHEETS = [
+    PIPELINE_MAP['70710959'],
+    PIPELINE_MAP['679755281'],
+    PIPELINE_MAP.default
+  ];
+
+  return {
+    // --- HubSpot Auth ---
+   // HUBSPOT_TOKEN: 'Your Token',
+    DEFAULT_START: '2023-01-01',
+
+    // --- Pipeline Definitions ---
+    PIPELINE_MAP: PIPELINE_MAP,
+    SOURCE_SHEETS: SOURCE_SHEETS,
+    PAYMENT_SHEET_NAME: PIPELINE_MAP.default,
+
+    // --- Output / Cache Sheet ---
+    TEMP_SHEET_NAME: 'temp sheet',
+    CONFIG_SHEET_NAME: 'Config_sheet',
+
+    // --- Team Member Lookups ---
+    SALES_TEAM_SHEET: 'Sales_team_Members',
+    CS_TEAM_SHEET: 'CS_team_Members',
+
+    // --- Fiscal & Processing Logic ---
+    FISCAL_YEAR_START_MONTH: 6, // 0=Jan, 6=July. Fiscal Year starts July 1st.
+    BATCH_SIZE: 2500,           // Writing in chunks of 2000 rows for speed/stability
+    COOLDOWN_MS: 2000,  // Increased pause to 2 seconds
+
+    // --- Row/Header Structure ---
+    PIPELINE_HEADER_ROW: 2,     // Data starts on Row 3
+    TEAM_HEADER_ROW: 1,         // Data starts on Row 2
+    REPORT_DATE_CELL: 'E6', // Cell in Config_sheet containing the Report Date
+
+    // --- Full 15-Column Mapping (Fixed to match indices 0-14) ---
+    SHEET_HEADERS: [
+      'Deal Name',
+      'Amount',
+      'Date Created',
+      'Stage Name',
+      'Pipeline Name',
+      'Owner ID',
+      'Associated Company ID',
+      'Associated Contact ID',
+      'Deal ID',
+      'Close Date',
+      'Last Modified Date',
+      'Company Name',
+      'Contact Name',
+      'Owner Name',
+      'Contact Email'
+    ]
+  };
+})();
+
+// ============================================================================
+// 2) STAGE & HEADER ALIASES
+// ============================================================================
+
+const STAGE_MAP = {
+  '136833349': 'Closed Won (Sales Pipeline)',
+  'closedwon': 'Revenue (Payment Pipeline)',
+  '996632637': 'Closed Won (Payment Pipeline)'
+};
+
+const STAGE_IDS = ['136833349', 'closedwon', '996632637'];
+const HEADERS = CONFIG.SHEET_HEADERS;
+
+// Internal mapping of output columns for the temp sheet
+const OUTPUT_HEADERS = [
+  "Company Name", "Deal Stage", "Full Name", "Email", "Associated Company ID",
+  "Associated Contact ID", "Amount", "Pipeline", "Close Date", "Create Date",
+  "Last Modified Date", "Deal Name", "Deal Owner", "Deal ID", "Deal Owner ID",
+  "Deal Type", "Client Age", "First Revenue Month", "First Revenue Fiscal Year",
+  "Realized Revenue (this FY)", "Is Sales Team Member", "Has Revenue this FY",
+  "Has Sales Team Revenue This FY", "Is CS Team Member", "Has CS Team Revenue This FY"
+];
+
+// ============================================================================
+// 3) UPDATED DEBUGGER (Verifies column indices)
+// ============================================================================
+
+function debugConfig() {
+  console.log('--- START CONFIG CHECK ---');
+  
+  // 1. Check Token
+  console.log('HubSpot Token exists:', !!CONFIG.HUBSPOT_TOKEN);
+
+  // 2. Check Sheet Existence
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  CONFIG.SOURCE_SHEETS.forEach(sName => {
+    const sheet = ss.getSheetByName(sName);
+    console.log(`Sheet [${sName}] found:`, !!sheet);
+    if (sheet) {
+      console.log(` > ${sName} Last Row: ${sheet.getLastRow()}`);
+    }
+  });
+
+  // 3. Verify Column Count
+  console.log('Expected Column Count:', CONFIG.SHEET_HEADERS.length);
+  if (CONFIG.SHEET_HEADERS.length < 15) {
+    console.error('CRITICAL: SHEET_HEADERS is too short! Logic will fail on Indices 11-14.');
+  }
+
+  // 4. Test Index Logic
+  console.log('Mapping Test: Index 11 is ' + CONFIG.SHEET_HEADERS[11]);
+  console.log('Mapping Test: Index 8 (Deal ID) is ' + CONFIG.SHEET_HEADERS[8]);
+
+  // 5. Fiscal Test
+  const testDate = new Date('2025-07-01');
+  const fy = getFiscalYear(testDate);
+  console.log('Fiscal Test: July 2025 should be FY 25/26. Result:', fy);
+
+  console.log('--- END CONFIG CHECK ---');
+}
