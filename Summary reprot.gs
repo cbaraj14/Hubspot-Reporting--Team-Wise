@@ -103,6 +103,10 @@ const SUMMARY_CONFIG = {
  * ============================================================================
  */
 function generateSummaryReport() {
+  // Initialize progress logger
+  initProgressLogger('Summary_Report');
+  logStart('Summary Revenue Report');
+  
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   
   // Attempt to grab the sheets
@@ -111,26 +115,41 @@ function generateSummaryReport() {
   
   // CRITICAL CHECK: If the input data is missing, we must stop.
   if (!sourceSheet) {
-    throw new Error(`CRITICAL ERROR: The source data sheet "${SUMMARY_CONFIG.SOURCE_SHEET}" was not found. Please ensure it exists.`);
+    const errorMsg = `CRITICAL ERROR: The source data sheet "${SUMMARY_CONFIG.SOURCE_SHEET}" was not found. Please ensure it exists.`;
+    logError(errorMsg);
+    throw new Error(errorMsg);
   }
   if (!configSheet) {
-    throw new Error(`CRITICAL ERROR: The configuration sheet "${SUMMARY_CONFIG.CONFIG_SHEET}" was not found.`);
+    const errorMsg = `CRITICAL ERROR: The configuration sheet "${SUMMARY_CONFIG.CONFIG_SHEET}" was not found.`;
+    logError(errorMsg);
+    throw new Error(errorMsg);
   }
+
+  logInfo(`Reading data from ${SUMMARY_CONFIG.SOURCE_SHEET} sheet`);
+  logInfo(`Using configuration from ${SUMMARY_CONFIG.CONFIG_SHEET} sheet`);
 
   const startVal = configSheet.getRange(SUMMARY_CONFIG.REPORT_START_CELL).getValue();
   const endVal = configSheet.getRange(SUMMARY_CONFIG.REPORT_END_CELL).getValue();
   
   if (!startVal || !endVal) {
-    SpreadsheetApp.getUi().alert("Error: Dates are missing in E8/E9 of the Config sheet.");
+    const errorMsg = "Error: Dates are missing in E8/E9 of the Config sheet.";
+    logError(errorMsg);
+    SpreadsheetApp.getUi().alert(errorMsg);
     return;
   }
 
   const startDate = new Date(startVal);
   const endDate = new Date(endVal);
-  const reportFY = getFYString(endDate);
+  const reportFY = getFYString(endDate, SUMMARY_CONFIG.FY_START_MONTH);
+
+  logInfo(`Report Start: ${formatDateToISO(startDate)}`);
+  logInfo(`Report End: ${formatDateToISO(endDate)}`);
+  logInfo(`Report FY: ${reportFY}`);
 
   const data = sourceSheet.getDataRange().getValues();
   const rows = data.slice(1);
+  
+  logInfo(`Loaded ${rows.length} data rows`);
   
   const pivotMap = {};
   const allMonths = new Set();
@@ -202,6 +221,9 @@ function generateSummaryReport() {
 
   // D) WRITE & FORMAT
   writeAndFormatSummary(ss, finalOutput, sortedMonths, reportFY);
+  
+  logSuccess(`✅ Summary Report completed: ${finalOutput.length - 1} companies processed`);
+  printExecutionSummary();
 }
 
 /**
@@ -210,10 +232,12 @@ function generateSummaryReport() {
  * ============================================================================
  */
 function writeAndFormatSummary(ss, finalOutput, sortedMonths, reportFY) {
+  logInfo(`📝 Writing report to target sheet: ${SUMMARY_CONFIG.Summary_Sheet}`);
+  
   //let sheet = ss.getSheetByName(SUMMARY_CONFIG.Summary_Sheet);
   let sheet = '';
   sheet = ss.getSheetByName(SUMMARY_CONFIG.Summary_Sheet);
-  console.log(sheet)
+  
   // If the Summary Report was deleted, this creates it again
   if (!sheet) {
     sheet = ss.insertSheet(SUMMARY_CONFIG.Summary_Sheet);
@@ -279,11 +303,21 @@ function writeAndFormatSummary(ss, finalOutput, sortedMonths, reportFY) {
     } else if (getFYString(new Date(m)) !== reportFY) range.setFontColor("#999999");
   });
 
+  logDebug(`Writing ${lastRow} rows x ${lastCol} columns`);
+  
   if (sheet.getFilter()) sheet.getFilter().remove();
   sheet.getRange(1, 1, lastRow, lastCol).createFilter();
   sheet.autoResizeColumns(1, lastCol);
+  
+  logSuccess(`✅ Report written: ${lastRow - 1} rows, ${lastCol} columns (including ${sortedMonths.length} months) with auto-filter`);
 }
 
+/**
+ * ============================================================================
+ * CALCULATE POC TAG
+ * ============================================================================
+ * Determines POC Team classification based on payment history
+ */
 function calculatePOCTag(p, g) {
   if (p.payAllSales && !p.payAllCS) return "Sales Team";
   if (p.payAllCS && !p.payAllSales) return "CS Team";
@@ -297,18 +331,16 @@ function calculatePOCTag(p, g) {
   return (g.anySales && g.anyCS) ? "CS & Sales" : "C-Suite";
 }
 
-function getFYString(date) {
-  const year = date.getFullYear();
-  const fyStart = (date.getMonth() >= SUMMARY_CONFIG.FY_START_MONTH) ? year : year - 1;
-  return `FY ${fyStart.toString().slice(-2)}/${(fyStart + 1).toString().slice(-2)}`;
+/**
+ * ============================================================================
+ * LEGACY HELPER FUNCTIONS - MAINTAINED FOR BACKWARD COMPATIBILITY
+ * ============================================================================
+ * These functions now delegate to unified helpers
+ */
+function getFYString(date, fyStartMonth = SUMMARY_CONFIG.FY_START_MONTH) {
+  return getFYString(date, fyStartMonth);
 }
 
 function columnToLetter(column) {
-  let temp, letter = "";
-  while (column > 0) {
-    temp = (column - 1) % 26;
-    letter = String.fromCharCode(temp + 65) + letter;
-    column = (column - temp - 1) / 26;
-  }
-  return letter;
+  return columnToLetter(column);
 }

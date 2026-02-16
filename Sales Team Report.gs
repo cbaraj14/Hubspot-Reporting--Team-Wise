@@ -139,25 +139,41 @@ const SALES_TRAILING_COLUMNS = [
  * ============================================================================
  */
 function salesGenerateSalesTeamReport() {
+  // Initialize progress logger
+  initProgressLogger('Sales_Team_Report');
+  logStart('Sales Team Revenue Report');
+  
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sourceSheet = ss.getSheetByName(SALES_REPORT_CONFIG.SOURCE_SHEET);
   const configSheet = ss.getSheetByName(SALES_REPORT_CONFIG.CONFIG_SHEET);
   const stopSheet = ss.getSheetByName(SALES_REPORT_CONFIG.STOP_LIST_SHEET);
 
   if (!sourceSheet || !configSheet) {
-    throw new Error("Source or Config sheet missing.");
+    const errorMsg = "Source or Config sheet missing.";
+    logError(errorMsg);
+    throw new Error(errorMsg);
   }
+
+  logInfo(`Reading data from ${SALES_REPORT_CONFIG.SOURCE_SHEET} sheet`);
+  logInfo(`Using configuration from ${SALES_REPORT_CONFIG.CONFIG_SHEET} sheet`);
 
   // Load Configurations
   const startDate = new Date(configSheet.getRange(SALES_REPORT_CONFIG.START_DATE_CELL).getValue());
   const endDate = new Date(configSheet.getRange(SALES_REPORT_CONFIG.END_DATE_CELL).getValue());
   const rawReportDate = new Date(configSheet.getRange(SALES_REPORT_CONFIG.REPORT_DATE_CELL).getValue());
   const reportDate = new Date(rawReportDate.getFullYear(), rawReportDate.getMonth(), 1);
-  const reportFY = salesGetFYString(endDate);
+  const reportFY = getFYString(endDate, 6);
+
+  logInfo(`Report Start: ${formatDateToISO(startDate)}`);
+  logInfo(`Report End: ${formatDateToISO(endDate)}`);
+  logInfo(`Report Date: ${formatDateToISO(reportDate)}`);
+  logInfo(`Report FY: ${reportFY}`);
 
   // Dynamic Pipeline Logic: Pull from E18, fallback to "Payment Pipeline" if empty
   const targetPipelineRaw = configSheet.getRange(SALES_REPORT_CONFIG.TARGET_PIPELINE_CELL).getValue();
   const targetPipeline = targetPipelineRaw ? targetPipelineRaw.toString().trim() : SALES_REPORT_CONFIG.DEFAULT_PIPELINE;
+  
+  logInfo(`Target Pipeline: ${targetPipeline}`);
   
   // FY Boundaries for Forecast logic
   let fyStartYear = reportDate.getMonth() >= 6 ? reportDate.getFullYear() : reportDate.getFullYear() - 1;
@@ -171,9 +187,13 @@ function salesGenerateSalesTeamReport() {
   const filterG_val = configSheet.getRange(SALES_REPORT_CONFIG.FILTER_G_CELL).getValue();
   const filterH_months = configSheet.getRange(SALES_REPORT_CONFIG.FILTER_H_CELL).getValue() || 12;
 
+  logInfo(`Filters - C: ${filterC_val}, D: ${filterD_val}, E: ${filterE_val}, F: ${filterF_threshold}, G: ${filterG_val}, H: ${filterH_months}`);
+
   const stopList = stopSheet ? stopSheet.getDataRange().getValues().map(r => r[0].toString().toLowerCase()) : [];
   const rawData = sourceSheet.getDataRange().getValues();
   const rows = rawData.slice(1);
+  
+  logInfo(`Loaded ${rows.length} data rows`);
   
   const companyGroups = {};
   rows.forEach(row => {
@@ -187,19 +207,23 @@ function salesGenerateSalesTeamReport() {
     companyGroups[co].push(row);
   });
 
+  logInfo(`Grouped into ${Object.keys(companyGroups).length} companies`);
+
   const pivotMap = {};
   const allMonths = new Set();
 
   // Populate all months range for headers
   let tempH = new Date(startDate.getFullYear(), startDate.getMonth(), 1);
   while (tempH <= endDate) {
-    allMonths.add(Utilities.formatDate(tempH, Session.getScriptTimeZone(), "yyyy-MMM"));
+    allMonths.add(formatDateToYYYYMMM(tempH));
     tempH.setMonth(tempH.getMonth() + 1);
   }
 
   // B) APPLY FILTERS & AGGREGATE
+  let processedCount = 0;
   for (const companyName in companyGroups) {
     const deals = companyGroups[companyName];
+    processedCount++;
 
     // --- MANDATORY FILTERS ---
     if (stopList.includes(companyName.toLowerCase())) continue;
@@ -214,7 +238,7 @@ function salesGenerateSalesTeamReport() {
 
     const isOldOTP = deals.some(d => d[SALES_REPORT_CONFIG.COL_CLIENT_AGE] === "Old" && d[SALES_REPORT_CONFIG.COL_DEAL_TYPE] === "OTP");
     if (isOldOTP) {
-        const fyPayments = deals.filter(d => salesGetFYString(new Date(d[SALES_REPORT_CONFIG.COL_CLOSE_DATE])) === reportFY).length;
+        const fyPayments = deals.filter(d => getFYString(new Date(d[SALES_REPORT_CONFIG.COL_CLOSE_DATE]), 6) === reportFY).length;
         if (fyPayments > filterF_threshold) continue;
     }
 
@@ -246,7 +270,7 @@ function salesGenerateSalesTeamReport() {
       const closeDate = new Date(row[SALES_REPORT_CONFIG.COL_CLOSE_DATE]);
       if (closeDate < startDate || closeDate > endDate) return;
 
-      const monthKey = Utilities.formatDate(closeDate, Session.getScriptTimeZone(), "yyyy-MMM");
+      const monthKey = formatDateToYYYYMMM(closeDate);
       if (!pivotMap[companyName]) {
         pivotMap[companyName] = {
           name: companyName,
@@ -259,15 +283,20 @@ function salesGenerateSalesTeamReport() {
       }
 
       const p = pivotMap[companyName];
-      const amount = parseFloat(row[SALES_REPORT_CONFIG.COL_AMOUNT]) || 0;
+      const amount = parseNumeric(row[SALES_REPORT_CONFIG.COL_AMOUNT]);
       p.monthlyValues[monthKey] = (p.monthlyValues[monthKey] || 0) + amount;
-      if (salesGetFYString(closeDate) === reportFY) {
+      if (getFYString(closeDate, 6) === reportFY) {
         p.realizedFYSource += amount;
       }
     });
   }
+  
+  logInfo(`Processed ${processedCount} companies, ${Object.keys(pivotMap).length} matched filters`);
 
   salesRenderReport(ss, pivotMap, allMonths, reportFY, reportDate, currentFYStart, currentFYEnd, filterH_months);
+  
+  logSuccess(`✅ Sales Team Report completed: ${Object.keys(pivotMap).length} companies processed`);
+  printExecutionSummary();
 }
 
 /**
@@ -276,8 +305,9 @@ function salesGenerateSalesTeamReport() {
 function salesHasRevenueGrowth(deals) {
     const monthlyTotals = {};
     deals.forEach(d => {
-        const m = Utilities.formatDate(new Date(d[SALES_REPORT_CONFIG.COL_CLOSE_DATE]), Session.getScriptTimeZone(), "yyyy-MM");
-        monthlyTotals[m] = (monthlyTotals[m] || 0) + (parseFloat(d[SALES_REPORT_CONFIG.COL_AMOUNT]) || 0);
+        const closeDate = new Date(d[SALES_REPORT_CONFIG.COL_CLOSE_DATE]);
+        const m = formatDateToYYYYMM(closeDate);
+        monthlyTotals[m] = (monthlyTotals[m] || 0) + parseNumeric(d[SALES_REPORT_CONFIG.COL_AMOUNT]);
     });
     const sortedMonths = Object.keys(monthlyTotals).sort();
     for (let i = 1; i < sortedMonths.length; i++) {
@@ -290,6 +320,8 @@ function salesHasRevenueGrowth(deals) {
  * Main Rendering function matching CS report UI/Logic
  */
 function salesRenderReport(ss, pivotMap, allMonthsSet, reportFY, reportDate, fyStart, fyEnd, hMonths) {
+  logInfo(`📝 Writing report to target sheet: ${SALES_REPORT_CONFIG.REPORT_SHEET}`);
+  
   const sortedMonthsKeys = Array.from(allMonthsSet).sort((a,b) => new Date(a) - new Date(b));
   const dynamicHeaders = SALES_EXTRA_COLUMNS.map(c => c.header);
   const headers = ["Company Name", ...dynamicHeaders, ...sortedMonthsKeys, ...SALES_TRAILING_COLUMNS];
@@ -315,10 +347,10 @@ function salesRenderReport(ss, pivotMap, allMonthsSet, reportFY, reportDate, fyS
     });
 
     // Baseline for forecast
-    const curMonthKey = Utilities.formatDate(reportDate, Session.getScriptTimeZone(), "yyyy-MMM");
+    const curMonthKey = formatDateToYYYYMMM(reportDate);
     const prevDate = new Date(reportDate);
     prevDate.setMonth(prevDate.getMonth() - 1);
-    const prevMonthKey = Utilities.formatDate(prevDate, Session.getScriptTimeZone(), "yyyy-MMM");
+    const prevMonthKey = formatDateToYYYYMMM(prevDate);
     
     const curVal = p.monthlyValues[curMonthKey] || 0;
     const prevVal = p.monthlyValues[prevMonthKey] || 0;
@@ -372,8 +404,8 @@ function salesRenderReport(ss, pivotMap, allMonthsSet, reportFY, reportDate, fyS
     if (sparkIdx !== -1) {
       const sparkCol = sparkIdx + 2;
       for (let i = 2; i <= lastRow; i++) {
-        const start = salesColumnToLetter(monthStartIdx) + i;
-        const end = salesColumnToLetter(monthStartIdx + sortedMonthsKeys.length - 1) + i;
+        const start = columnToLetter(monthStartIdx) + i;
+        const end = columnToLetter(monthStartIdx + sortedMonthsKeys.length - 1) + i;
         sheet.getRange(i, sparkCol).setFormula(`=SPARKLINE(${start}:${end}, {"charttype","line";"linewidth",2;"linecolor","#5f6368"})`);
       }
     }
@@ -383,7 +415,7 @@ function salesRenderReport(ss, pivotMap, allMonthsSet, reportFY, reportDate, fyS
     sheet.getRange(totalRowIdx, 1).setValue("TOTALS").setFontWeight("bold");
     const totalCols = [...Array(sortedMonthsKeys.length).keys()].map(x => x + monthStartIdx).concat([lastCol - 2, lastCol - 1, lastCol]);
     totalCols.forEach(c => {
-      sheet.getRange(totalRowIdx, c).setFormula(`=SUBTOTAL(9, ${salesColumnToLetter(c)}2:${salesColumnToLetter(c)}${lastRow})`).setFontWeight("bold");
+      sheet.getRange(totalRowIdx, c).setFormula(`=SUBTOTAL(9, ${columnToLetter(c)}2:${columnToLetter(c)}${lastRow})`).setFontWeight("bold");
     });
 
     // Final Styling
@@ -403,7 +435,7 @@ function salesRenderReport(ss, pivotMap, allMonthsSet, reportFY, reportDate, fyS
           const vals = range.getValues();
           const prevVals = sheet.getRange(2, colIdx - 1, lastRow - 1, 1).getValues();
           const colors = vals.map((v, idx) => {
-            const curr = parseFloat(v[0]) || 0, prev = parseFloat(prevVals[idx][0]) || 0;
+            const curr = parseNumeric(v[0]), prev = parseNumeric(prevVals[idx][0]);
             if (curr === 0 || prev === 0) return "black";
             return (curr > prev * 1.1 || curr > prev + 50) ? "#008000" : (curr < prev * 0.9 || curr < prev - 50) ? "#FF0000" : "black";
           });
@@ -414,26 +446,30 @@ function salesRenderReport(ss, pivotMap, allMonthsSet, reportFY, reportDate, fyS
       }
     });
 
+    logDebug(`Writing ${lastRow} rows x ${lastCol} columns`);
+    
     sheet.autoResizeColumns(1, lastCol);
     if (sheet.getFilter()) sheet.getFilter().remove();
     sheet.getRange(1, 1, lastRow, lastCol).createFilter();
+    
+    logSuccess(`✅ Report written: ${lastRow - 1} rows, ${lastCol} columns (including ${sortedMonthsKeys.length} months) with auto-filter`);
   } else {
-    SpreadsheetApp.getUi().alert("No data matched the Sales Team criteria.");
+    const message = "No data matched the Sales Team criteria.";
+    logWarn(message);
+    SpreadsheetApp.getUi().alert(message);
   }
 }
 
+/**
+ * ============================================================================
+ * LEGACY FUNCTIONS - MAINTAINED FOR BACKWARD COMPATIBILITY
+ * ============================================================================
+ * Delegates to unified helper functions for compatibility
+ */
 function salesGetFYString(date) {
-  const year = date.getFullYear();
-  const fyStart = (date.getMonth() >= 6) ? year : year - 1;
-  return `FY ${fyStart.toString().slice(-2)}/${(fyStart + 1).toString().slice(-2)}`;
+  return getFYString(date, 6);
 }
 
 function salesColumnToLetter(column) {
-  let temp, letter = "";
-  while (column > 0) {
-    temp = (column - 1) % 26;
-    letter = String.fromCharCode(temp + 65) + letter;
-    column = (column - temp - 1) / 26;
-  }
-  return letter;
+  return columnToLetter(column);
 }
