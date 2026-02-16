@@ -1,0 +1,193 @@
+# HubSpot Integration - Git Ignore File
+
+# ============================================================================
+# SENSITIVE FILES - NEVER COMMIT THESE
+# ============================================================================
+
+# API Tokens and Credentials
+*token*
+*secret*
+*credential*
+*.env
+.env.*
+
+# Config files with actual tokens (if separated from code)
+config.local.js
+config.production.js
+secrets.json
+
+# ============================================================================
+# GOOGLE APPS SCRIPT
+# ============================================================================
+
+# Apps Script project file (contains script IDs)
+.clasp.json
+
+# Apps Script settings
+appsscript.json
+
+# ============================================================================
+# DEVELOPMENT FILES
+# ============================================================================
+
+# Editor directories and files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# ============================================================================
+# BACKUP FILES
+# ============================================================================
+
+# Backup copies of scripts
+*.backup
+*.bak
+*.old
+*_backup.*
+*_old.*
+
+# ============================================================================
+# TEMPORARY FILES
+# ============================================================================
+
+# Temporary test files
+test_*.gs
+temp_*.gs
+sandbox_*.gs
+debug_*.gs
+
+# Output files
+output/
+exports/
+downloads/
+
+# ============================================================================
+# DOCUMENTATION BUILDS
+# ============================================================================
+
+# Generated documentation
+docs/_build/
+docs/.doctrees/
+
+# ============================================================================
+# DATA FILES (If storing locally)
+# ============================================================================
+
+# CSV exports
+*.csv
+
+# Excel files
+*.xlsx
+*.xls
+
+# JSON data dumps
+data_*.json
+export_*.json
+
+# ============================================================================
+# PACKAGE MANAGERS
+# ============================================================================
+
+# Node (if using for any tooling)
+node_modules/
+package-lock.json
+yarn.lock
+
+# Python (if using for any scripts)
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+venv/
+env/
+
+# ============================================================================
+# OPERATING SYSTEM FILES
+# ============================================================================
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+
+# Thumbnails
+._*
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Linux
+.directory
+.Trash-*
+
+# ============================================================================
+# ARCHIVE FILES
+# ============================================================================
+
+*.zip
+*.tar
+*.tar.gz
+*.rar
+*.7z
+
+# ============================================================================
+# NOTES
+# ============================================================================
+
+# Personal notes (use these prefixes for private notes)
+PRIVATE_*
+PERSONAL_*
+TODO_PERSONAL.md
+NOTES_PERSONAL.md
+
+# Meeting notes with sensitive info
+*_meeting_notes.md
+*_client_notes.md
+
+# ============================================================================
+# PROJECT-SPECIFIC IGNORES
+# ============================================================================
+
+# HubSpot data exports (if downloaded locally)
+hubspot_export_*.json
+deals_backup_*.csv
+
+# Test spreadsheet IDs
+test_spreadsheet_ids.txt
+
+# Local configuration overrides
+Config.local.gs
+
+# ============================================================================
+# IMPORTANT NOTES
+# ============================================================================
+
+# REMINDER: Never commit:
+# 1. HubSpot API tokens (HUBSPOT_TOKEN in Config file)
+# 2. Spreadsheet IDs (if hardcoded)
+# 3. Client-specific data
+# 4. Personal access tokens
+# 5. OAuth credentials
+# 6. Any file containing actual company/customer data
+
+# BEFORE COMMITTING:
+# 1. Search for 'pat-na1-' (HubSpot token prefix)
+# 2. Search for actual company names
+# 3. Search for email addresses
+# 4. Search for 'TODO' and 'FIXME' if workflow requires
+# 5. Review diff carefully
+
+# ============================================================================

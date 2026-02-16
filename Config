@@ -1,3 +1,56 @@
+/**
+ * ============================================================================
+ * GLOBAL CONFIGURATION - SINGLE SOURCE OF TRUTH
+ * ============================================================================
+ * 
+ * This file contains ALL configuration settings for the HubSpot integration.
+ * Modify these values to customize the system for your environment.
+ * 
+ * CONFIGURATION PHILOSOPHY:
+ * - All settings in one place (no scattered configs)
+ * - Non-developer friendly (clear variable names and comments)
+ * - No logic mixed with config (pure data only)
+ * - Derived values computed automatically
+ * 
+ * KEY SECTIONS:
+ * 1. HubSpot Authentication
+ * 2. Pipeline Definitions & Mappings
+ * 3. Sheet Names (input, cache, output, lookup)
+ * 4. Fiscal Year Settings
+ * 5. Performance Tuning
+ * 6. Column Structure & Headers
+ * 
+ * BEFORE FIRST USE:
+ * 1. Set your HUBSPOT_TOKEN (get from HubSpot Private Apps)
+ * 2. Verify PIPELINE_MAP IDs match your HubSpot pipelines
+ * 3. Confirm FISCAL_YEAR_START_MONTH (6 = July)
+ * 4. Check SHEET_HEADERS match your HubSpot deal properties
+ * 
+ * PERFORMANCE SETTINGS:
+ * - BATCH_SIZE: Number of rows written at once (increase for speed, decrease for stability)
+ * - COOLDOWN_MS: Delay between API calls (increase if hitting rate limits)
+ * 
+ * STAGE MAPPING:
+ * Only deals in these stages are imported:
+ * - 136833349: Closed Won (Sales Pipeline)
+ * - closedwon: Revenue (Payment Pipeline)
+ * - 996632637: Closed Won (Payment Pipeline)
+ * 
+ * Add more stage IDs in STAGE_IDS array if needed.
+ * 
+ * SHEET STRUCTURE:
+ * The system expects 15 columns in this exact order:
+ * [0] Deal Name, [1] Amount, [2] Date Created, [3] Stage Name,
+ * [4] Pipeline Name, [5] Owner ID, [6] Company ID, [7] Contact ID,
+ * [8] Deal ID, [9] Close Date, [10] Last Modified Date,
+ * [11] Company Name, [12] Contact Name, [13] Owner Name, [14] Contact Email
+ * 
+ * DO NOT change column order without updating all report scripts!
+ * 
+ * See README.md for complete setup guide.
+ * ============================================================================
+ */
+
 // ============================================================================
 // 1) CONFIGURATION (CONSOLIDATED & FIXED)
 // ============================================================================
@@ -18,7 +71,9 @@ const CONFIG = (() => {
 
   return {
     // --- HubSpot Auth ---
-   // HUBSPOT_TOKEN: 'Your Token',
+    // IMPORTANT: Add your HubSpot Private App token here
+    // See README.md for detailed setup instructions
+    HUBSPOT_TOKEN: 'your-hubspot-token-here',
     DEFAULT_START: '2023-01-01',
 
     // --- Pipeline Definitions ---

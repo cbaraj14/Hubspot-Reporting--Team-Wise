@@ -1,5 +1,86 @@
 /**
  * ============================================================================
+ * SALES TEAM REPORT GENERATOR
+ * ============================================================================
+ * 
+ * Creates a filtered revenue report specifically for the Sales team with
+ * advanced business rules for growth tracking and commission calculations.
+ * 
+ * PURPOSE:
+ * - Track new business and expansions
+ * - Monitor revenue growth for existing accounts
+ * - Identify transferred accounts (CS → Sales)
+ * - Support commission and quota calculations
+ * - Filter out non-sales managed accounts
+ * 
+ * DATA SOURCE:
+ * - Reads from TEMP_DATA sheet (pre-computed cache)
+ * - Applies multiple filters based on Config_sheet settings
+ * - Date range from Config_sheet E8 (start) and E9 (end)
+ * 
+ * FILTERING LOGIC (ALL filters applied sequentially):
+ * 
+ * MANDATORY FILTERS (always applied):
+ * A. Company Exclusion List
+ *    - Excludes companies in "Company_Stop_list" sheet
+ * B. Sales Team Membership
+ *    - Requires "Company has Sales Team" = TRUE
+ * 
+ * OPTIONAL FILTERS (based on Config_sheet checkboxes):
+ * C. Revenue This FY (E12)
+ *    - If TRUE: Include only if "Has Revenue this FY" = TRUE
+ * D. Aggregation Level (E13)
+ *    - "Deal Level": Aggregate only Sales-owned deals
+ *    - "Company Level": Aggregate all company deals (default)
+ * E. New Clients Only (E14)
+ *    - If "New only": Include only "Client Age" = "New"
+ * F. OLD OTP Payment Threshold (E15)
+ *    - For OLD + OTP: Include if payments in prior FY ≤ threshold
+ * G. Revenue Growth Check (E16)
+ *    - For OLD + Recurring/R-OTP: Require month-over-month growth
+ *    - Must have ≥2 paid months in current FY
+ *    - Must show ≥1 increase (>10% or >$50)
+ * H. Transferred Account Window (E17)
+ *    - For Recurring/R-OTP with CS members
+ *    - Include deals within X months of first revenue
+ * 
+ * FORECASTING:
+ * - Only for Recurring Revenue companies
+ * - Maximum 12 total months (including actual payments)
+ * - Uses last payment amount
+ * - No forecast if Report Month or prior month = 0
+ * 
+ * OUTPUT STRUCTURE:
+ * Same as Summary Report with additional filters applied
+ * 
+ * CONFIGURATION CELLS (Config_sheet):
+ * E6  = Report Date
+ * E8  = Report Start Date
+ * E9  = Report End Date
+ * E12 = Filter C (Revenue This FY checkbox)
+ * E13 = Filter D (Aggregation Level dropdown)
+ * E14 = Filter E (New Clients Only dropdown)
+ * E15 = Filter F (Payment Threshold number)
+ * E16 = Filter G (Revenue Growth checkbox)
+ * E17 = Filter H (Transferred Window number)
+ * E18 = Target Pipeline (optional override)
+ * 
+ * USAGE:
+ * From Menu: "6. Run Sales Team Report"
+ * Or call: salesGenerateSalesTeamReport()
+ * 
+ * PREREQUISITES:
+ * - TEMP_DATA sheet must exist
+ * - Config_sheet with all required cells
+ * - Company_Stop_list sheet (can be empty)
+ * - Sales_team_Members sheet with Owner IDs
+ * 
+ * See README.md for complete documentation and filtering examples.
+ * ============================================================================
+ */
+
+/**
+ * ============================================================================
  * 1) CONFIGURATION for Sales Team Report
  * ============================================================================
  */
