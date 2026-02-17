@@ -18,8 +18,8 @@
 * - Progress: updateProgress() with automatic timestamp
 * 
 * OUTPUT FORMAT:
-* 2026-02-16 14:33:12.345	Module_Name	SUCCESS	✅ Operation completed successfully
-* 2026-02-16 14:33:11.123	Module_Name	DEBUG	🔍 Processing item: 42
+* 2026-02-16 14:33:12.345    Module_Name    SUCCESS    ✅ Operation completed successfully
+* 2026-02-16 14:33:11.123    Module_Name    DEBUG    🔍 Processing item: 42
 * 
 * ============================================================================
 */
@@ -176,34 +176,35 @@ function updateProgress(module, status, current = null, total = null) {
 /**
  * Progress update for sheet operations
  * @param {Sheet} sheet - Progress sheet
- * @param {string} column - Column to update
  * @param {string} message - Progress message
  */
-function updateProgressSheet(sheet, column, message) {
-  if (!sheet) {
+function updateProgressSheet(sheet, message) {
+  let progressSheet = sheet;
+  if (!progressSheet) {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    progressSheet = ss ? getOrCreateProgressSheet(ss) : null;
+  }
+
+  if (!progressSheet) {
     logWarn('Progress sheet not available');
     return;
   }
+
+  ensureProgressSheetHeaders(progressSheet);
   
   const timestamp = getCurrentTimestamp();
-  const entry = `[${timestamp}] ${PROGRESS_STATE.moduleName}: ${message}`;
   
   try {
-    // Find the next empty row or append
-    const lastRow = sheet.getLastRow();
-    const rowToUpdate = lastRow + 1;
+    progressSheet.insertRows(2, 1);
     
-    // Create timestamp array
-    const timestampArray = [[timestamp]];
-    const moduleArray = [[PROGRESS_STATE.moduleName]];
-    const typeArray = [['INFO']];
-    const messageArray = [[message]];
+    const rowValues = [[timestamp, PROGRESS_STATE.moduleName, 'INFO', message]];
+    progressSheet.getRange(2, 1, 1, rowValues[0].length).setValues(rowValues);
     
-    // Write to appropriate columns
-    sheet.getRange(rowToUpdate, 1, 1, 1).setValues(timestampArray);
-    sheet.getRange(rowToUpdate, 2, 1, 1).setValues(moduleArray);
-    sheet.getRange(rowToUpdate, 3, 1, 1).setValues(typeArray);
-    sheet.getRange(rowToUpdate, 4, 1, 1).setValues(messageArray);
+    const maxRows = 1001;
+    const lastRow = progressSheet.getLastRow();
+    if (lastRow > maxRows) {
+      progressSheet.deleteRows(maxRows + 1, lastRow - maxRows);
+    }
     
     logInfo(`Progress updated: ${message}`);
   } catch (error) {
@@ -221,21 +222,26 @@ function getOrCreateProgressSheet(ss) {
   
   if (!progressSheet) {
     progressSheet = ss.insertSheet('Progress Sheet');
-    
-    // Set up headers
-    const headers = ['Timestamp', 'Module', 'Type', 'Message'];
+  }
+
+  ensureProgressSheetHeaders(progressSheet);
+  
+  return progressSheet;
+}
+
+function ensureProgressSheetHeaders(progressSheet) {
+  const headers = ['Timestamp', 'Module', 'Type', 'Progress'];
+  const currentHeaders = progressSheet.getRange(1, 1, 1, headers.length).getValues()[0];
+  const needsHeaders = headers.some((header, index) => currentHeaders[index] !== header);
+
+  if (needsHeaders) {
     progressSheet.getRange(1, 1, 1, headers.length).setValues([headers]);
-    
-    // Format headers
     progressSheet.getRange(1, 1, 1, headers.length)
       .setBackground('#2563eb')
       .setFontColor('#ffffff')
       .setFontWeight('bold');
-    
     progressSheet.setFrozenRows(1);
   }
-  
-  return progressSheet;
 }
 
 /**
@@ -287,13 +293,16 @@ function writeLogsToSheet(ss) {
       logWarn('No log entries to write');
       return;
     }
-    
-    // Find starting row
+
+    const orderedLogs = logs.slice().reverse();
+    progressSheet.insertRows(2, orderedLogs.length);
+    progressSheet.getRange(2, 1, orderedLogs.length, 4).setValues(orderedLogs);
+
+    const maxRows = 1001;
     const lastRow = progressSheet.getLastRow();
-    const startRow = lastRow + 1;
-    
-    // Write logs
-    progressSheet.getRange(startRow, 1, logs.length, 4).setValues(logs);
+    if (lastRow > maxRows) {
+      progressSheet.deleteRows(maxRows + 1, lastRow - maxRows);
+    }
     
     logSuccess(`Wrote ${logs.length} log entries to progress sheet`);
   } catch (error) {

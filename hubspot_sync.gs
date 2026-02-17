@@ -154,18 +154,24 @@ function updateLastModifiedForExistingDeals() {
  */
 function syncHubSpotDeals() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
+  initProgressLogger('HubSpot_Import');
+  const progressSheet = getOrCreateProgressSheet(ss);
+  updateProgressSheet(progressSheet, 'Starting HubSpot deal sync.');
   
   try {
     Logger.log('--- [START] Syncing New/Updated Deals from HubSpot ---');
     const lastUpdated = getLastUpdatedTimestamp(ss);
     const startTimestamp = parseFlexibleDate(lastUpdated);
     Logger.log(`[QUERY] Syncing deals modified since: ${startTimestamp.toISOString()}`);
+    updateProgressSheet(progressSheet, `Syncing deals modified since: ${startTimestamp.toISOString()}`);
     
     let after = null;
     let totalSynced = 0;
+    let batchNumber = 1;
 
     do {
       Logger.log(`[FETCH] Fetching batch (Current Total: ${totalSynced})...`);
+      updateProgressSheet(progressSheet, `Fetching batch ${batchNumber} (Current Total: ${totalSynced})...`);
       
       const payload = {
         filterGroups: [{
@@ -190,21 +196,27 @@ function syncHubSpotDeals() {
       
       if (deals.length > 0) {
         Logger.log(`[PROCESS] Processing ${deals.length} deals in this batch.`);
+        updateProgressSheet(progressSheet, `Processing ${deals.length} deals in batch ${batchNumber}.`);
         const grouped = groupDealsByPipeline(deals);
         Object.keys(grouped).forEach(sheetName => {
           streamBatchToSheet(ss, sheetName, grouped[sheetName]);
         });
         totalSynced += deals.length;
+      } else {
+        updateProgressSheet(progressSheet, `No deals returned in batch ${batchNumber}.`);
       }
       after = data.paging?.next?.after || null;
+      batchNumber += 1;
       Utilities.sleep(300); 
     } while (after);
     
     finalizeSheets(ss);
     Logger.log(`--- [FINISH] Stream Sync Complete. Total Deals Synced: ${totalSynced} ---`);
+    updateProgressSheet(progressSheet, `Sync complete. Total Deals Synced: ${totalSynced}.`);
     SpreadsheetApp.getUi().alert('Sync Complete. Check logs for details.');
   } catch (error) {
     Logger.log(`[CRITICAL] Sync Error: ${error.message}`);
+    updateProgressSheet(progressSheet, `Sync error: ${error.message}`);
     SpreadsheetApp.getUi().alert('Sync Error: ' + error.message);
   }
 }
