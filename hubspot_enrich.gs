@@ -3,24 +3,28 @@
  * HUBSPOT ENRICH MODULE
  * ============================================================================
  * 
- * This module handles enriching deal data from HubSpot with company and
- * contact associations. Maintains local databases of contacts and companies
- * for quick lookup and manual editing.
+ * This module handles enriching deal data from HubSpot with company,
+ * contact, and owner associations. Maintains local databases for quick
+ * lookup and manual editing.
  * 
  * KEY FEATURES:
  * - Fills missing company associations from HubSpot
  * - Fills missing contact associations from HubSpot
+ * - Fills missing owner information from Owner DB or HubSpot
  * - Maintains editable Contact DB for known contacts
  * - Maintains editable Companies DB for known companies
+ * - Maintains editable Owner DB for known owners
  * - Batch processing with rate limiting
  * 
  * MENU FUNCTIONS:
  * - syncMissingCompanies()      → Fill missing company associations
  * - syncMissingContacts()       → Fill missing contact associations
+ * - syncMissingOwners()         → Fill missing owner names
  * 
  * DATABASE SHEETS:
  * - Contact DB: Contact ID, Contact Name, Contact Email, Associated Company, etc.
  * - Companies DB: Company ID, Company Name, Company Owner ID, Segment, Industry, etc.
+ * - Owner DB: Owner ID, Owner Name, Team Name
  * 
  * CONFIGURATION:
  * - Uses CONFIG object from Config file
@@ -37,11 +41,146 @@
 
 const ENRICH_DB_HEADERS = {
   CONTACT_DB: ['Contact ID', 'Contact Name', 'Contact Email', 'Associated Company', 'Phone', 'Job Title', 'Last Updated'],
-  COMPANIES_DB: ['Company ID', 'Company Name', 'Company Owner ID', 'Company Segment', 'Industry', 'Website', 'Phone', 'Last Updated']
+  COMPANIES_DB: ['Company ID', 'Company Name', 'Company Owner ID', 'Company Segment', 'Industry', 'Website', 'Phone', 'Last Updated'],
+  OWNER_DB: ['Owner ID', 'Owner Name', 'Team Name', 'Last Updated']
 };
 
 // ============================================================================
-// 2. CONTACT DATABASE FUNCTIONS
+// 2. OWNER DATABASE FUNCTIONS
+// ============================================================================
+
+/**
+ * Get or create the Owner DB sheet
+ * @param {Spreadsheet} ss - Spreadsheet instance
+ * @returns {Sheet} Owner DB sheet
+ */
+function getOrCreateOwnerDB(ss) {
+  return getOrCreateDBSheet(ss, 'Owner DB', ENRICH_DB_HEADERS.OWNER_DB);
+}
+
+/**
+ * Load owner data from Owner DB into a lookup map
+ * @param {Spreadsheet} ss - Spreadsheet instance
+ * @returns {Object} Map of ownerId -> owner data
+ */
+function loadOwnerDB(ss) {
+  const sheet = ss.getSheetByName('Owner DB');
+  if (!sheet) return {};
+  
+  const data = sheet.getDataRange().getValues();
+  if (data.length <= 1) return {}; // Only headers
+  
+  const ownerMap = {};
+  for (let i = 1; i < data.length; i++) {
+    const row = data[i];
+    const ownerId = row[0] ? row[0].toString() : '';
+    if (ownerId) {
+      ownerMap[ownerId] = {
+        ownerId: ownerId,
+        ownerName: row[1] || '',
+        teamName: row[2] || '',
+        lastUpdated: row[3] || ''
+      };
+    }
+  }
+  return ownerMap;
+}
+
+/**
+ * Add or update owner in Owner DB
+ * @param {Spreadsheet} ss - Spreadsheet instance
+ * @param {Object} ownerData - Owner data object
+ */
+function updateOwnerDB(ss, ownerData) {
+  const sheet = getOrCreateOwnerDB(ss);
+  const data = sheet.getDataRange().getValues();
+  
+  const ownerId = ownerData.ownerId.toString();
+  const now = new Date().toISOString();
+  
+  // Check if owner already exists
+  let rowIndex = -1;
+  for (let i = 1; i < data.length; i++) {
+    if (data[i][0] && data[i][0].toString() === ownerId) {
+      rowIndex = i + 1; // 1-based row index
+      break;
+    }
+  }
+  
+  const rowData = [
+    ownerData.ownerId,
+    ownerData.ownerName || '',
+    ownerData.teamName || '',
+    now
+  ];
+  
+  if (rowIndex > 0) {
+    // Update existing
+    sheet.getRange(rowIndex, 1, 1, rowData.length).setValues([rowData]);
+  } else {
+    // Append new
+    sheet.appendRow(rowData);
+  }
+}
+
+/**
+ * Fetch owner data from HubSpot API
+ * @param {Spreadsheet} ss - Spreadsheet instance
+ * @param {string} ownerId - Owner ID
+ * @returns {Object} Owner data or null
+ */
+function fetchOwnerFromHubSpot(ss, ownerId) {
+  if (!ownerId || ownerId === 'N/A' || ownerId === '') return null;
+  
+  try {
+    const response = urlFetchWithRetry(`https://api.hubapi.com/crm/v3/owners/${ownerId}`, {
+      method: 'GET',
+      headers: { 
+        'Authorization': 'Bearer ' + CONFIG.HUBSPOT_TOKEN, 
+        'Content-Type': 'application/json' 
+      }
+    });
+    
+    const owner = JSON.parse(response.getContentText());
+    
+    const ownerData = {
+      ownerId: ownerId,
+      ownerName: `${owner.firstName || ''} ${owner.lastName || ''}`.trim(),
+      teamName: owner.teamName || ''
+    };
+    
+    // Add to DB
+    updateOwnerDB(ss, ownerData);
+    
+    return ownerData;
+    
+  } catch (error) {
+    Logger.log(`[OWNER FETCH ERROR] Failed to fetch owner ${ownerId}: ${error.message}`);
+    return null;
+  }
+}
+
+/**
+ * Get owner data from DB or HubSpot
+ * @param {Spreadsheet} ss - Spreadsheet instance
+ * @param {string} ownerId - Owner ID
+ * @returns {Object} Owner data or null
+ */
+function getEnrichedOwnerData(ss, ownerId) {
+  if (!ownerId || ownerId === 'N/A' || ownerId === '') return null;
+  
+  // First check DB
+  const db = loadOwnerDB(ss);
+  if (db[ownerId]) {
+    return db[ownerId];
+  }
+  
+  // Not in DB, fetch from HubSpot
+  return fetchOwnerFromHubSpot(ss, ownerId);
+}
+
+// ============================================================================
+// 3. CONTACT DATABASE FUNCTIONS
 // ============================================================================
 
 /**
@@ -125,29 +264,21 @@ function updateContactDB(ss, contactData) {
 }
 
 /**
- * Batch update contacts in Contact DB from HubSpot data
+ * Fetch all contacts from HubSpot API (for initial DB creation)
  * @param {Spreadsheet} ss - Spreadsheet instance
- * @param {Array} contactIds - Array of contact IDs to fetch and update
  */
-function batchUpdateContactDB(ss, contactIds) {
-  if (!contactIds || contactIds.length === 0) return;
+function fetchAllContactsFromHubSpot(ss) {
+  Logger.log('[CONTACT DB] Fetching all contacts from HubSpot...');
   
-  const uniqueIds = [...new Set(contactIds.filter(id => id && id !== 'N/A'))];
-  if (uniqueIds.length === 0) return;
+  let after = null;
+  let totalFetched = 0;
   
-  Logger.log(`[CONTACT DB] Fetching ${uniqueIds.length} contacts from HubSpot`);
-  
-  // Process in batches of 100
-  for (let i = 0; i < uniqueIds.length; i += 100) {
-    const batch = uniqueIds.slice(i, i + 100);
-    
+  do {
     try {
       const payload = {
-        filterGroups: [{
-          filters: [{ propertyName: 'hs_object_id', operator: 'IN', values: batch }]
-        }],
         properties: ['firstname', 'lastname', 'email', 'phone', 'jobtitle', 'company'],
-        limit: 100
+        limit: 100,
+        after: after
       };
       
       const response = urlFetchWithRetry('https://api.hubapi.com/crm/v3/objects/contacts/search', {
@@ -174,17 +305,71 @@ function batchUpdateContactDB(ss, contactIds) {
         });
       });
       
-      Logger.log(`[CONTACT DB] Updated ${results.length} contacts`);
+      totalFetched += results.length;
+      after = data.paging?.next?.after || null;
+      
+      if (results.length > 0) {
+        Logger.log(`[CONTACT DB] Fetched ${totalFetched} contacts so far...`);
+      }
+      
+      Utilities.sleep(300);
     } catch (error) {
-      Logger.log(`[CONTACT DB ERROR] Batch update failed: ${error.message}`);
+      Logger.log(`[CONTACT DB ERROR] Fetch failed: ${error.message}`);
+      break;
     }
+  } while (after);
+  
+  Logger.log(`[CONTACT DB] Total contacts fetched: ${totalFetched}`);
+}
+
+/**
+ * Get enriched contact data from DB or HubSpot
+ * @param {Spreadsheet} ss - Spreadsheet instance
+ * @param {string} contactId - Contact ID
+ * @returns {Object} Contact data
+ */
+function getEnrichedContactData(ss, contactId) {
+  if (!contactId || contactId === 'N/A') return null;
+  
+  // First check DB
+  const db = loadContactDB(ss);
+  if (db[contactId]) {
+    return db[contactId];
+  }
+  
+  // Not in DB, fetch from HubSpot and add to DB
+  try {
+    const response = urlFetchWithRetry(`https://api.hubapi.com/crm/v3/objects/contacts/${contactId}?properties=firstname,lastname,email,phone,jobtitle,company`, {
+      method: 'GET',
+      headers: { 
+        'Authorization': 'Bearer ' + CONFIG.HUBSPOT_TOKEN, 
+        'Content-Type': 'application/json' 
+      }
+    });
     
-    Utilities.sleep(300);
+    const contact = JSON.parse(response.getContentText());
+    const props = contact.properties;
+    
+    const contactData = {
+      contactId: contactId,
+      contactName: `${props.firstname || ''} ${props.lastname || ''}`.trim(),
+      contactEmail: props.email || '',
+      associatedCompany: props.company || '',
+      phone: props.phone || '',
+      jobTitle: props.jobtitle || ''
+    };
+    
+    updateContactDB(ss, contactData);
+    return contactData;
+    
+  } catch (error) {
+    Logger.log(`[ENRICH ERROR] Failed to fetch contact ${contactId}: ${error.message}`);
+    return null;
   }
 }
 
 // ============================================================================
-// 3. COMPANY DATABASE FUNCTIONS
+// 4. COMPANY DATABASE FUNCTIONS
 // ============================================================================
 
 /**
@@ -270,29 +455,21 @@ function updateCompaniesDB(ss, companyData) {
 }
 
 /**
- * Batch update companies in Companies DB from HubSpot data
+ * Fetch all companies from HubSpot API (for initial DB creation)
  * @param {Spreadsheet} ss - Spreadsheet instance
- * @param {Array} companyIds - Array of company IDs to fetch and update
  */
-function batchUpdateCompaniesDB(ss, companyIds) {
-  if (!companyIds || companyIds.length === 0) return;
+function fetchAllCompaniesFromHubSpot(ss) {
+  Logger.log('[COMPANIES DB] Fetching all companies from HubSpot...');
   
-  const uniqueIds = [...new Set(companyIds.filter(id => id && id !== 'N/A'))];
-  if (uniqueIds.length === 0) return;
+  let after = null;
+  let totalFetched = 0;
   
-  Logger.log(`[COMPANIES DB] Fetching ${uniqueIds.length} companies from HubSpot`);
-  
-  // Process in batches of 100
-  for (let i = 0; i < uniqueIds.length; i += 100) {
-    const batch = uniqueIds.slice(i, i + 100);
-    
+  do {
     try {
       const payload = {
-        filterGroups: [{
-          filters: [{ propertyName: 'hs_object_id', operator: 'IN', values: batch }]
-        }],
         properties: ['name', 'hubspot_owner_id', 'segment', 'industry', 'website', 'phone'],
-        limit: 100
+        limit: 100,
+        after: after
       };
       
       const response = urlFetchWithRetry('https://api.hubapi.com/crm/v3/objects/companies/search', {
@@ -320,98 +497,21 @@ function batchUpdateCompaniesDB(ss, companyIds) {
         });
       });
       
-      Logger.log(`[COMPANIES DB] Updated ${results.length} companies`);
-    } catch (error) {
-      Logger.log(`[COMPANIES DB ERROR] Batch update failed: ${error.message}`);
-    }
-    
-    Utilities.sleep(300);
-  }
-}
-
-// ============================================================================
-// 4. HELPER FUNCTIONS FOR DB MANAGEMENT
-// ============================================================================
-
-/**
- * Get or create a database sheet with proper headers
- * @param {Spreadsheet} ss - Spreadsheet instance
- * @param {string} sheetName - Name of sheet
- * @param {Array} headers - Array of header names
- * @returns {Sheet} Sheet instance
- */
-function getOrCreateDBSheet(ss, sheetName, headers) {
-  let sheet = ss.getSheetByName(sheetName);
-  
-  if (!sheet) {
-    Logger.log(`[DB] Creating new sheet: ${sheetName}`);
-    sheet = ss.insertSheet(sheetName);
-    
-    // Add headers
-    sheet.getRange(1, 1, 1, headers.length).setValues([headers])
-      .setBackground('#2563eb')
-      .setFontColor('#ffffff')
-      .setFontWeight('bold');
-    
-    // Freeze header row
-    sheet.setFrozenRows(1);
-    
-    // Add filter
-    sheet.getRange(1, 1, 1, headers.length).createFilter();
-    
-    // Auto-resize columns
-    for (let i = 1; i <= headers.length; i++) {
-      sheet.autoResizeColumn(i);
-    }
-  }
-  
-  return sheet;
-}
-
-/**
- * Get enriched contact data from DB or HubSpot
- * @param {Spreadsheet} ss - Spreadsheet instance
- * @param {string} contactId - Contact ID
- * @returns {Object} Contact data
- */
-function getEnrichedContactData(ss, contactId) {
-  if (!contactId || contactId === 'N/A') return null;
-  
-  // First check DB
-  const db = loadContactDB(ss);
-  if (db[contactId]) {
-    return db[contactId];
-  }
-  
-  // Not in DB, fetch from HubSpot and add to DB
-  try {
-    const response = urlFetchWithRetry(`https://api.hubapi.com/crm/v3/objects/contacts/${contactId}?properties=firstname,lastname,email,phone,jobtitle,company`, {
-      method: 'GET',
-      headers: { 
-        'Authorization': 'Bearer ' + CONFIG.HUBSPOT_TOKEN, 
-        'Content-Type': 'application/json' 
+      totalFetched += results.length;
+      after = data.paging?.next?.after || null;
+      
+      if (results.length > 0) {
+        Logger.log(`[COMPANIES DB] Fetched ${totalFetched} companies so far...`);
       }
-    });
-    
-    const contact = JSON.parse(response.getContentText());
-    const props = contact.properties;
-    
-    const contactData = {
-      contactId: contactId,
-      contactName: `${props.firstname || ''} ${props.lastname || ''}`.trim(),
-      contactEmail: props.email || '',
-      associatedCompany: props.company || '',
-      phone: props.phone || '',
-      jobTitle: props.jobtitle || ''
-    };
-    
-    updateContactDB(ss, contactData);
-    return contactData;
-    
-  } catch (error) {
-    Logger.log(`[ENRICH ERROR] Failed to fetch contact ${contactId}: ${error.message}`);
-    return null;
-  }
+      
+      Utilities.sleep(300);
+    } catch (error) {
+      Logger.log(`[COMPANIES DB ERROR] Fetch failed: ${error.message}`);
+      break;
+    }
+  } while (after);
+  
+  Logger.log(`[COMPANIES DB] Total companies fetched: ${totalFetched}`);
 }
 
 /**
@@ -462,7 +562,76 @@ function getEnrichedCompanyData(ss, companyId) {
 }
 
 // ============================================================================
-// 5. ASSOCIATION SYNC FUNCTIONS
+// 5. HELPER FUNCTIONS FOR DB MANAGEMENT
+// ============================================================================
+
+/**
+ * Get or create a database sheet with proper headers
+ * @param {Spreadsheet} ss - Spreadsheet instance
+ * @param {string} sheetName - Name of sheet
+ * @param {Array} headers - Array of header names
+ * @returns {Sheet} Sheet instance
+ */
+function getOrCreateDBSheet(ss, sheetName, headers) {
+  let sheet = ss.getSheetByName(sheetName);
+  
+  if (!sheet) {
+    Logger.log(`[DB] Creating new sheet: ${sheetName}`);
+    sheet = ss.insertSheet(sheetName);
+    
+    // Add headers
+    sheet.getRange(1, 1, 1, headers.length).setValues([headers])
+      .setBackground('#2563eb')
+      .setFontColor('#ffffff')
+      .setFontWeight('bold');
+    
+    // Freeze header row
+    sheet.setFrozenRows(1);
+    
+    // Add filter
+    sheet.getRange(1, 1, 1, headers.length).createFilter();
+    
+    // Auto-resize columns
+    for (let i = 1; i <= headers.length; i++) {
+      sheet.autoResizeColumn(i);
+    }
+  }
+  
+  return sheet;
+}
+
+/**
+ * Initialize all enrichment DBs
+ * If sheets don't exist, fetch all data from HubSpot
+ * @param {Spreadsheet} ss - Spreadsheet instance
+ */
+function initializeEnrichmentDBs(ss) {
+  Logger.log('--- [INIT] Initializing Enrichment DBs ---');
+  
+  // Check if Contact DB exists
+  let contactDBExists = ss.getSheetByName('Contact DB') !== null;
+  getOrCreateContactDB(ss);
+  if (!contactDBExists) {
+    Logger.log('[INIT] Contact DB is new, fetching all contacts from HubSpot...');
+    fetchAllContactsFromHubSpot(ss);
+  }
+  
+  // Check if Companies DB exists
+  let companiesDBExists = ss.getSheetByName('Companies DB') !== null;
+  getOrCreateCompaniesDB(ss);
+  if (!companiesDBExists) {
+    Logger.log('[INIT] Companies DB is new, fetching all companies from HubSpot...');
+    fetchAllCompaniesFromHubSpot(ss);
+  }
+  
+  // Owner DB - just create if doesn't exist (owners are fetched on-demand)
+  getOrCreateOwnerDB(ss);
+  
+  Logger.log('--- [INIT] Enrichment DBs initialized ---');
+}
+
+// ============================================================================
+// 6. ASSOCIATION SYNC FUNCTIONS
 // ============================================================================
 
 /**
@@ -471,9 +640,8 @@ function getEnrichedCompanyData(ss, companyId) {
 function syncMissingCompanies() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   
-  // Ensure DB sheets exist
-  getOrCreateContactDB(ss);
-  getOrCreateCompaniesDB(ss);
+  // Initialize DBs (creates if not exists, fetches all if new)
+  initializeEnrichmentDBs(ss);
   
   const pipelines = Object.values(CONFIG.PIPELINE_MAP);
   let totalUpdated = 0;
@@ -540,12 +708,6 @@ function syncMissingCompanies() {
     }
   });
   
-  // Update Companies DB with all fetched companies
-  if (allCompanyIds.length > 0) {
-    Logger.log(`[COMPANIES DB] Enriching ${allCompanyIds.length} companies`);
-    batchUpdateCompaniesDB(ss, allCompanyIds);
-  }
-  
   Logger.log(`--- [FINISH] Company Sync. Total Checked: ${totalUpdated} ---`);
 }
 
@@ -555,9 +717,8 @@ function syncMissingCompanies() {
 function syncMissingContacts() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   
-  // Ensure DB sheets exist
-  getOrCreateContactDB(ss);
-  getOrCreateCompaniesDB(ss);
+  // Initialize DBs (creates if not exists, fetches all if new)
+  initializeEnrichmentDBs(ss);
   
   const pipelines = Object.values(CONFIG.PIPELINE_MAP);
   let totalUpdated = 0;
@@ -617,67 +778,144 @@ function syncMissingContacts() {
     }
   });
   
-  // Update Contact DB with all fetched contacts
-  if (allContactIds.length > 0) {
-    Logger.log(`[CONTACT DB] Enriching ${allContactIds.length} contacts`);
-    batchUpdateContactDB(ss, allContactIds);
-  }
-  
   Logger.log(`--- [FINISH] Contact Sync complete ---`);
 }
 
 /**
- * Refresh all contact data in Contact DB from HubSpot
- * Useful for manual updates or periodic refresh
+ * Sync missing owner information and enrich with Owner DB data
  */
-function refreshContactDB() {
+function syncMissingOwners() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const sheet = ss.getSheetByName('Contact DB');
   
-  if (!sheet) {
-    Logger.log('[CONTACT DB] No Contact DB sheet found');
-    return;
-  }
+  // Ensure Owner DB exists
+  getOrCreateOwnerDB(ss);
   
-  const data = sheet.getDataRange().getValues();
-  const contactIds = [];
-  
-  for (let i = 1; i < data.length; i++) {
-    if (data[i][0]) {
-      contactIds.push(data[i][0].toString());
+  const pipelines = Object.values(CONFIG.PIPELINE_MAP);
+  let totalUpdated = 0;
+
+  Logger.log('--- [START] Owner Sync ---');
+
+  pipelines.forEach(sheetName => {
+    const sheet = ss.getSheetByName(sheetName);
+    if (!sheet) return;
+
+    const data = sheet.getDataRange().getValues();
+    const OWNER_ID_COL = 5;  // Column F - Owner ID
+    const OWNER_NAME_COL = 13; // Column N - Owner Name
+    
+    const missingOwners = [];
+    for (let i = 2; i < data.length; i++) {
+      const ownerId = data[i][OWNER_ID_COL];
+      const ownerName = data[i][OWNER_NAME_COL];
+      
+      // If we have an owner ID but no owner name
+      if (ownerId && ownerId !== '' && (!ownerName || ownerName === '')) {
+        missingOwners.push({ 
+          row: i + 1, 
+          ownerId: ownerId.toString()
+        });
+      }
     }
-  }
+
+    if (missingOwners.length > 0) {
+      Logger.log(`[INFO] Found ${missingOwners.length} deals missing owner info in ${sheetName}`);
+      
+      // Process unique owner IDs to avoid duplicate API calls
+      const uniqueOwnerIds = [...new Set(missingOwners.map(item => item.ownerId))];
+      
+      uniqueOwnerIds.forEach(ownerId => {
+        const ownerData = getEnrichedOwnerData(ss, ownerId);
+        
+        // Update all rows with this owner ID
+        missingOwners
+          .filter(item => item.ownerId === ownerId)
+          .forEach(item => {
+            if (ownerData && ownerData.ownerName) {
+              sheet.getRange(item.row, OWNER_NAME_COL + 1).setValue(ownerData.ownerName);
+            }
+          });
+        
+        totalUpdated++;
+        Utilities.sleep(100); // Rate limiting
+      });
+    }
+  });
   
-  Logger.log(`[CONTACT DB] Refreshing ${contactIds.length} contacts`);
-  batchUpdateContactDB(ss, contactIds);
-  Logger.log('[CONTACT DB] Refresh complete');
+  Logger.log(`--- [FINISH] Owner Sync. Total Updated: ${totalUpdated} ---`);
 }
 
 /**
- * Refresh all company data in Companies DB from HubSpot
- * Useful for manual updates or periodic refresh
+ * Scan pipelines for new contact/company/owner IDs and add to DBs
+ * This should be called periodically or after deal sync
  */
-function refreshCompaniesDB() {
+function syncNewIDsToDBs() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const sheet = ss.getSheetByName('Companies DB');
   
-  if (!sheet) {
-    Logger.log('[COMPANIES DB] No Companies DB sheet found');
-    return;
-  }
+  Logger.log('--- [START] Syncing New IDs to DBs ---');
   
-  const data = sheet.getDataRange().getValues();
-  const companyIds = [];
+  const pipelines = Object.values(CONFIG.PIPELINE_MAP);
+  const newContactIds = new Set();
+  const newCompanyIds = new Set();
+  const newOwnerIds = new Set();
   
-  for (let i = 1; i < data.length; i++) {
-    if (data[i][0]) {
-      companyIds.push(data[i][0].toString());
+  // Load existing DBs
+  const contactDB = loadContactDB(ss);
+  const companyDB = loadCompaniesDB(ss);
+  const ownerDB = loadOwnerDB(ss);
+  
+  pipelines.forEach(sheetName => {
+    const sheet = ss.getSheetByName(sheetName);
+    if (!sheet) return;
+
+    const data = sheet.getDataRange().getValues();
+    
+    for (let i = 2; i < data.length; i++) {
+      const contactId = data[i][7];  // Column H - Contact ID
+      const companyId = data[i][6];  // Column G - Company ID
+      const ownerId = data[i][5];    // Column F - Owner ID
+      
+      if (contactId && contactId !== '' && contactId !== 'N/A' && !contactDB[contactId]) {
+        newContactIds.add(contactId.toString());
+      }
+      if (companyId && companyId !== '' && companyId !== 'N/A' && !companyDB[companyId]) {
+        newCompanyIds.add(companyId.toString());
+      }
+      if (ownerId && ownerId !== '' && ownerId !== 'N/A' && !ownerDB[ownerId]) {
+        newOwnerIds.add(ownerId.toString());
+      }
     }
+  });
+  
+  Logger.log(`[SCAN] Found ${newContactIds.size} new contacts, ${newCompanyIds.size} new companies, ${newOwnerIds.size} new owners`);
+  
+  // Fetch and add new contacts
+  if (newContactIds.size > 0) {
+    Logger.log(`[CONTACT DB] Adding ${newContactIds.size} new contacts`);
+    newContactIds.forEach(contactId => {
+      getEnrichedContactData(ss, contactId);
+      Utilities.sleep(100);
+    });
   }
   
-  Logger.log(`[COMPANIES DB] Refreshing ${companyIds.length} companies`);
-  batchUpdateCompaniesDB(ss, companyIds);
-  Logger.log('[COMPANIES DB] Refresh complete');
+  // Fetch and add new companies
+  if (newCompanyIds.size > 0) {
+    Logger.log(`[COMPANIES DB] Adding ${newCompanyIds.size} new companies`);
+    newCompanyIds.forEach(companyId => {
+      getEnrichedCompanyData(ss, companyId);
+      Utilities.sleep(100);
+    });
+  }
+  
+  // Fetch and add new owners
+  if (newOwnerIds.size > 0) {
+    Logger.log(`[OWNER DB] Adding ${newOwnerIds.size} new owners`);
+    newOwnerIds.forEach(ownerId => {
+      fetchOwnerFromHubSpot(ss, ownerId);
+      Utilities.sleep(100);
+    });
+  }
+  
+  Logger.log('--- [FINISH] New IDs synced to DBs ---');
 }
 
 /**
@@ -705,18 +943,161 @@ function callHubSpotBatchAssociations(dealIds, toObjectType) {
 }
 
 // ============================================================================
-// 6. INITIALIZATION FUNCTIONS
+// 7. REFRESH FUNCTIONS
+// ============================================================================
+
+/**
+ * Refresh all contact data in Contact DB from HubSpot
+ */
+function refreshContactDB() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName('Contact DB');
+  
+  if (!sheet) {
+    Logger.log('[CONTACT DB] No Contact DB sheet found');
+    return;
+  }
+  
+  const data = sheet.getDataRange().getValues();
+  const contactIds = [];
+  
+  for (let i = 1; i < data.length; i++) {
+    if (data[i][0]) {
+      contactIds.push(data[i][0].toString());
+    }
+  }
+  
+  Logger.log(`[CONTACT DB] Refreshing ${contactIds.length} contacts`);
+  
+  // Process in batches
+  for (let i = 0; i < contactIds.length; i += 100) {
+    const batch = contactIds.slice(i, i + 100);
+    batch.forEach(contactId => {
+      try {
+        const response = urlFetchWithRetry(`https://api.hubapi.com/crm/v3/objects/contacts/${contactId}?properties=firstname,lastname,email,phone,jobtitle,company`, {
+          method: 'GET',
+          headers: { 
+            'Authorization': 'Bearer ' + CONFIG.HUBSPOT_TOKEN, 
+            'Content-Type': 'application/json' 
+          }
+        });
+        
+        const contact = JSON.parse(response.getContentText());
+        const props = contact.properties;
+        
+        updateContactDB(ss, {
+          contactId: contactId,
+          contactName: `${props.firstname || ''} ${props.lastname || ''}`.trim(),
+          contactEmail: props.email || '',
+          associatedCompany: props.company || '',
+          phone: props.phone || '',
+          jobTitle: props.jobtitle || ''
+        });
+      } catch (error) {
+        Logger.log(`[REFRESH ERROR] Contact ${contactId}: ${error.message}`);
+      }
+    });
+    Utilities.sleep(300);
+  }
+  
+  Logger.log('[CONTACT DB] Refresh complete');
+}
+
+/**
+ * Refresh all company data in Companies DB from HubSpot
+ */
+function refreshCompaniesDB() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName('Companies DB');
+  
+  if (!sheet) {
+    Logger.log('[COMPANIES DB] No Companies DB sheet found');
+    return;
+  }
+  
+  const data = sheet.getDataRange().getValues();
+  const companyIds = [];
+  
+  for (let i = 1; i < data.length; i++) {
+    if (data[i][0]) {
+      companyIds.push(data[i][0].toString());
+    }
+  }
+  
+  Logger.log(`[COMPANIES DB] Refreshing ${companyIds.length} companies`);
+  
+  // Process in batches
+  for (let i = 0; i < companyIds.length; i += 100) {
+    const batch = companyIds.slice(i, i + 100);
+    batch.forEach(companyId => {
+      try {
+        const response = urlFetchWithRetry(`https://api.hubapi.com/crm/v3/objects/companies/${companyId}?properties=name,hubspot_owner_id,segment,industry,website,phone`, {
+          method: 'GET',
+          headers: { 
+            'Authorization': 'Bearer ' + CONFIG.HUBSPOT_TOKEN, 
+            'Content-Type': 'application/json' 
+          }
+        });
+        
+        const company = JSON.parse(response.getContentText());
+        const props = company.properties;
+        
+        updateCompaniesDB(ss, {
+          companyId: companyId,
+          companyName: props.name || '',
+          companyOwnerId: props.hubspot_owner_id || '',
+          companySegment: props.segment || '',
+          industry: props.industry || '',
+          website: props.website || '',
+          phone: props.phone || ''
+        });
+      } catch (error) {
+        Logger.log(`[REFRESH ERROR] Company ${companyId}: ${error.message}`);
+      }
+    });
+    Utilities.sleep(300);
+  }
+  
+  Logger.log('[COMPANIES DB] Refresh complete');
+}
+
+/**
+ * Refresh all owner data in Owner DB from HubSpot
+ */
+function refreshOwnerDB() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName('Owner DB');
+  
+  if (!sheet) {
+    Logger.log('[OWNER DB] No Owner DB sheet found');
+    return;
+  }
+  
+  const data = sheet.getDataRange().getValues();
+  
+  for (let i = 1; i < data.length; i++) {
+    if (data[i][0]) {
+      const ownerId = data[i][0].toString();
+      fetchOwnerFromHubSpot(ss, ownerId);
+      Utilities.sleep(100);
+    }
+  }
+  
+  Logger.log('[OWNER DB] Refresh complete');
+}
+
+// ============================================================================
+// 8. INITIALIZATION FUNCTIONS
 // ============================================================================
 
 /**
  * Initialize enrichment system - creates DB sheets if they don't exist
+ * If sheets are new, fetches all data from HubSpot
  */
 function initEnrichmentDBs() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   
-  getOrCreateContactDB(ss);
-  getOrCreateCompaniesDB(ss);
+  initializeEnrichmentDBs(ss);
   
-  Logger.log('[INIT] Enrichment DBs initialized');
-  SpreadsheetApp.getUi().alert('Enrichment DBs initialized. Contact DB and Companies DB sheets are ready.');
+  SpreadsheetApp.getUi().alert('Enrichment DBs initialized. Contact DB, Companies DB, and Owner DB sheets are ready.');
 }

@@ -165,15 +165,32 @@ function syncHubSpotDeals() {
     let after = null;
     let totalSynced = 0;
     let batchNumber = 1;
+    let currentStartTimestamp = startTimestamp;
+    const HUBSPOT_SEARCH_LIMIT = 10000; // HubSpot search API limit
 
     do {
+      // HubSpot has a 10,000 result limit on search API
+      // After 9900 results, we need to restart with a new timestamp
+      if (totalSynced > 0 && totalSynced % HUBSPOT_SEARCH_LIMIT >= 9900) {
+        Logger.log(`[PAGINATION] Approaching ${HUBSPOT_SEARCH_LIMIT} result limit. Restarting with new timestamp.`);
+        updateProgressSheet(progressSheet, `Restarting search with updated timestamp to bypass 10k limit...`);
+        
+        // Use the most recent modified date from our data as the new starting point
+        const newTimestamp = getLastUpdatedTimestamp(ss);
+        currentStartTimestamp = parseFlexibleDate(newTimestamp);
+        after = null; // Reset pagination
+        
+        // Small delay before restarting
+        Utilities.sleep(1000);
+      }
+      
       Logger.log(`[FETCH] Fetching batch (Current Total: ${totalSynced})...`);
       updateProgressSheet(progressSheet, `Fetching batch ${batchNumber} (Current Total: ${totalSynced})...`);
       
       const payload = {
         filterGroups: [{
           filters: [
-            { propertyName: 'hs_lastmodifieddate', operator: 'GTE', value: startTimestamp.getTime().toString() },
+            { propertyName: 'hs_lastmodifieddate', operator: 'GTE', value: currentStartTimestamp.getTime().toString() },
             { propertyName: 'dealstage', operator: 'IN', values: STAGE_IDS }
           ]
         }],
@@ -189,6 +206,12 @@ function syncHubSpotDeals() {
       });
 
       const data = JSON.parse(response.getContentText());
+      
+      // Check for API errors
+      if (data.status === 'error') {
+        throw new Error(`HubSpot API error: ${data.message}`);
+      }
+      
       const deals = data.results || [];
       
       if (deals.length > 0) {
@@ -277,12 +300,40 @@ function groupDealsByPipeline(deals) {
 }
 
 function getLastUpdatedTimestamp(ss) {
-  const sheet = ss.getSheetByName(CONFIG.PIPELINE_MAP['default']);
-  if (sheet) {
+  const pipelines = Object.values(CONFIG.PIPELINE_MAP);
+  let latestTimestamp = null;
+  
+  // Check all pipeline sheets for the most recent last modified date
+  pipelines.forEach(sheetName => {
+    const sheet = ss.getSheetByName(sheetName);
+    if (!sheet) return;
+    
+    // Check A1 for last updated timestamp
     const val = sheet.getRange('A1').getValue();
-    if (val && val.toString().includes('Last Updated:')) return val.toString().replace('Last Updated: ', '').trim();
-  }
-  return CONFIG.DEFAULT_START;
+    if (val && val.toString().includes('Last Updated:')) {
+      const timestamp = val.toString().replace('Last Updated: ', '').trim();
+      const parsedDate = parseFlexibleDate(timestamp);
+      if (!latestTimestamp || parsedDate > latestTimestamp) {
+        latestTimestamp = parsedDate;
+      }
+    }
+    
+    // Also check the actual data in column K (Last Modified Date - index 10)
+    const data = sheet.getDataRange().getValues();
+    if (data.length > 2) {
+      for (let i = 2; i < data.length; i++) {
+        const modifiedDate = data[i][10]; // Column K - Last Modified Date
+        if (modifiedDate) {
+          const parsedDate = parseFlexibleDate(modifiedDate);
+          if (!latestTimestamp || parsedDate > latestTimestamp) {
+            latestTimestamp = parsedDate;
+          }
+        }
+      }
+    }
+  });
+  
+  return latestTimestamp ? latestTimestamp.toISOString() : CONFIG.DEFAULT_START;
 }
 
 function setupSheetHeaders(sheet) {
