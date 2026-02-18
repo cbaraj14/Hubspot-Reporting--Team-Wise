@@ -264,21 +264,114 @@ function updateContactDB(ss, contactData) {
 }
 
 /**
- * Fetch all contacts from HubSpot API (for initial DB creation)
+ * Collect unique contact IDs from all pipeline sheets
  * @param {Spreadsheet} ss - Spreadsheet instance
+ * @returns {Array} Array of unique contact IDs
  */
-function fetchAllContactsFromHubSpot(ss) {
-  Logger.log('[CONTACT DB] Fetching all contacts from HubSpot...');
+function collectContactIdsFromPipelines(ss) {
+  const pipelines = Object.values(CONFIG.PIPELINE_MAP);
+  const contactIds = new Set();
   
-  let after = null;
-  let totalFetched = 0;
+  pipelines.forEach(sheetName => {
+    const sheet = ss.getSheetByName(sheetName);
+    if (!sheet) return;
+    
+    const data = sheet.getDataRange().getValues();
+    for (let i = 2; i < data.length; i++) {
+      const contactId = data[i][7]; // Column H - Contact ID
+      if (contactId && contactId !== '' && contactId !== 'N/A') {
+        contactIds.add(contactId.toString());
+      }
+    }
+  });
   
-  do {
+  return Array.from(contactIds);
+}
+
+/**
+ * Collect unique company IDs from all pipeline sheets
+ * @param {Spreadsheet} ss - Spreadsheet instance
+ * @returns {Array} Array of unique company IDs
+ */
+function collectCompanyIdsFromPipelines(ss) {
+  const pipelines = Object.values(CONFIG.PIPELINE_MAP);
+  const companyIds = new Set();
+  
+  pipelines.forEach(sheetName => {
+    const sheet = ss.getSheetByName(sheetName);
+    if (!sheet) return;
+    
+    const data = sheet.getDataRange().getValues();
+    for (let i = 2; i < data.length; i++) {
+      const companyId = data[i][6]; // Column G - Company ID
+      if (companyId && companyId !== '' && companyId !== 'N/A') {
+        companyIds.add(companyId.toString());
+      }
+    }
+  });
+  
+  return Array.from(companyIds);
+}
+
+/**
+ * Collect unique owner IDs from all pipeline sheets
+ * @param {Spreadsheet} ss - Spreadsheet instance
+ * @returns {Array} Array of unique owner IDs
+ */
+function collectOwnerIdsFromPipelines(ss) {
+  const pipelines = Object.values(CONFIG.PIPELINE_MAP);
+  const ownerIds = new Set();
+  
+  pipelines.forEach(sheetName => {
+    const sheet = ss.getSheetByName(sheetName);
+    if (!sheet) return;
+    
+    const data = sheet.getDataRange().getValues();
+    for (let i = 2; i < data.length; i++) {
+      const ownerId = data[i][5]; // Column F - Owner ID
+      if (ownerId && ownerId !== '' && ownerId !== 'N/A') {
+        ownerIds.add(ownerId.toString());
+      }
+    }
+  });
+  
+  return Array.from(ownerIds);
+}
+
+/**
+ * Fetch contacts by IDs from HubSpot API (batch optimized)
+ * @param {Spreadsheet} ss - Spreadsheet instance
+ * @param {Array} contactIds - Array of contact IDs to fetch
+ */
+function fetchContactsByIds(ss, contactIds) {
+  if (!contactIds || contactIds.length === 0) {
+    Logger.log('[CONTACT DB] No contact IDs to fetch');
+    return;
+  }
+  
+  Logger.log(`[CONTACT DB] Fetching ${contactIds.length} contacts from HubSpot...`);
+  
+  const existingDB = loadContactDB(ss);
+  const idsToFetch = contactIds.filter(id => !existingDB[id]);
+  
+  if (idsToFetch.length === 0) {
+    Logger.log('[CONTACT DB] All contacts already in DB');
+    return;
+  }
+  
+  Logger.log(`[CONTACT DB] ${idsToFetch.length} new contacts to fetch`);
+  
+  // Process in batches of 100 using search API
+  for (let i = 0; i < idsToFetch.length; i += 100) {
+    const batch = idsToFetch.slice(i, i + 100);
+    
     try {
       const payload = {
+        filterGroups: [{
+          filters: [{ propertyName: 'hs_object_id', operator: 'IN', values: batch }]
+        }],
         properties: ['firstname', 'lastname', 'email', 'phone', 'jobtitle', 'company'],
-        limit: 100,
-        after: after
+        limit: 100
       };
       
       const response = urlFetchWithRetry('https://api.hubapi.com/crm/v3/objects/contacts/search', {
@@ -293,6 +386,7 @@ function fetchAllContactsFromHubSpot(ss) {
       const data = JSON.parse(response.getContentText());
       const results = data.results || [];
       
+      // Update DB with fetched contacts
       results.forEach(contact => {
         const props = contact.properties;
         updateContactDB(ss, {
@@ -305,21 +399,42 @@ function fetchAllContactsFromHubSpot(ss) {
         });
       });
       
-      totalFetched += results.length;
-      after = data.paging?.next?.after || null;
-      
-      if (results.length > 0) {
-        Logger.log(`[CONTACT DB] Fetched ${totalFetched} contacts so far...`);
-      }
-      
-      Utilities.sleep(300);
+      Logger.log(`[CONTACT DB] Fetched ${results.length}/${batch.length} contacts in batch`);
     } catch (error) {
-      Logger.log(`[CONTACT DB ERROR] Fetch failed: ${error.message}`);
-      break;
+      Logger.log(`[CONTACT DB ERROR] Batch fetch failed: ${error.message}`);
+      
+      // Fall back to individual fetches for this batch
+      batch.forEach(contactId => {
+        try {
+          const response = urlFetchWithRetry(`https://api.hubapi.com/crm/v3/objects/contacts/${contactId}?properties=firstname,lastname,email,phone,jobtitle,company`, {
+            method: 'GET',
+            headers: { 
+              'Authorization': 'Bearer ' + CONFIG.HUBSPOT_TOKEN, 
+              'Content-Type': 'application/json' 
+            }
+          });
+          
+          const contact = JSON.parse(response.getContentText());
+          const props = contact.properties;
+          updateContactDB(ss, {
+            contactId: contactId,
+            contactName: `${props.firstname || ''} ${props.lastname || ''}`.trim(),
+            contactEmail: props.email || '',
+            associatedCompany: props.company || '',
+            phone: props.phone || '',
+            jobTitle: props.jobtitle || ''
+          });
+        } catch (individualError) {
+          Logger.log(`[CONTACT DB ERROR] Failed to fetch contact ${contactId}: ${individualError.message}`);
+        }
+        Utilities.sleep(100);
+      });
     }
-  } while (after);
+    
+    Utilities.sleep(300);
+  }
   
-  Logger.log(`[CONTACT DB] Total contacts fetched: ${totalFetched}`);
+  Logger.log(`[CONTACT DB] Fetch complete`);
 }
 
 /**
@@ -455,21 +570,39 @@ function updateCompaniesDB(ss, companyData) {
 }
 
 /**
- * Fetch all companies from HubSpot API (for initial DB creation)
+ * Fetch companies by IDs from HubSpot API (batch optimized)
  * @param {Spreadsheet} ss - Spreadsheet instance
+ * @param {Array} companyIds - Array of company IDs to fetch
  */
-function fetchAllCompaniesFromHubSpot(ss) {
-  Logger.log('[COMPANIES DB] Fetching all companies from HubSpot...');
+function fetchCompaniesByIds(ss, companyIds) {
+  if (!companyIds || companyIds.length === 0) {
+    Logger.log('[COMPANIES DB] No company IDs to fetch');
+    return;
+  }
   
-  let after = null;
-  let totalFetched = 0;
+  Logger.log(`[COMPANIES DB] Fetching ${companyIds.length} companies from HubSpot...`);
   
-  do {
+  const existingDB = loadCompaniesDB(ss);
+  const idsToFetch = companyIds.filter(id => !existingDB[id]);
+  
+  if (idsToFetch.length === 0) {
+    Logger.log('[COMPANIES DB] All companies already in DB');
+    return;
+  }
+  
+  Logger.log(`[COMPANIES DB] ${idsToFetch.length} new companies to fetch`);
+  
+  // Process in batches of 100 using search API
+  for (let i = 0; i < idsToFetch.length; i += 100) {
+    const batch = idsToFetch.slice(i, i + 100);
+    
     try {
       const payload = {
+        filterGroups: [{
+          filters: [{ propertyName: 'hs_object_id', operator: 'IN', values: batch }]
+        }],
         properties: ['name', 'hubspot_owner_id', 'segment', 'industry', 'website', 'phone'],
-        limit: 100,
-        after: after
+        limit: 100
       };
       
       const response = urlFetchWithRetry('https://api.hubapi.com/crm/v3/objects/companies/search', {
@@ -484,6 +617,7 @@ function fetchAllCompaniesFromHubSpot(ss) {
       const data = JSON.parse(response.getContentText());
       const results = data.results || [];
       
+      // Update DB with fetched companies
       results.forEach(company => {
         const props = company.properties;
         updateCompaniesDB(ss, {
@@ -497,21 +631,43 @@ function fetchAllCompaniesFromHubSpot(ss) {
         });
       });
       
-      totalFetched += results.length;
-      after = data.paging?.next?.after || null;
-      
-      if (results.length > 0) {
-        Logger.log(`[COMPANIES DB] Fetched ${totalFetched} companies so far...`);
-      }
-      
-      Utilities.sleep(300);
+      Logger.log(`[COMPANIES DB] Fetched ${results.length}/${batch.length} companies in batch`);
     } catch (error) {
-      Logger.log(`[COMPANIES DB ERROR] Fetch failed: ${error.message}`);
-      break;
+      Logger.log(`[COMPANIES DB ERROR] Batch fetch failed: ${error.message}`);
+      
+      // Fall back to individual fetches for this batch
+      batch.forEach(companyId => {
+        try {
+          const response = urlFetchWithRetry(`https://api.hubapi.com/crm/v3/objects/companies/${companyId}?properties=name,hubspot_owner_id,segment,industry,website,phone`, {
+            method: 'GET',
+            headers: { 
+              'Authorization': 'Bearer ' + CONFIG.HUBSPOT_TOKEN, 
+              'Content-Type': 'application/json' 
+            }
+          });
+          
+          const company = JSON.parse(response.getContentText());
+          const props = company.properties;
+          updateCompaniesDB(ss, {
+            companyId: companyId,
+            companyName: props.name || '',
+            companyOwnerId: props.hubspot_owner_id || '',
+            companySegment: props.segment || '',
+            industry: props.industry || '',
+            website: props.website || '',
+            phone: props.phone || ''
+          });
+        } catch (individualError) {
+          Logger.log(`[COMPANIES DB ERROR] Failed to fetch company ${companyId}: ${individualError.message}`);
+        }
+        Utilities.sleep(100);
+      });
     }
-  } while (after);
+    
+    Utilities.sleep(300);
+  }
   
-  Logger.log(`[COMPANIES DB] Total companies fetched: ${totalFetched}`);
+  Logger.log(`[COMPANIES DB] Fetch complete`);
 }
 
 /**
@@ -602,30 +758,42 @@ function getOrCreateDBSheet(ss, sheetName, headers) {
 
 /**
  * Initialize all enrichment DBs
- * If sheets don't exist, fetch all data from HubSpot
+ * Creates sheets if they don't exist
+ * Collects IDs from pipeline sheets and fetches only those records
  * @param {Spreadsheet} ss - Spreadsheet instance
  */
 function initializeEnrichmentDBs(ss) {
   Logger.log('--- [INIT] Initializing Enrichment DBs ---');
   
-  // Check if Contact DB exists
-  let contactDBExists = ss.getSheetByName('Contact DB') !== null;
+  // Create/get DB sheets
   getOrCreateContactDB(ss);
-  if (!contactDBExists) {
-    Logger.log('[INIT] Contact DB is new, fetching all contacts from HubSpot...');
-    fetchAllContactsFromHubSpot(ss);
-  }
-  
-  // Check if Companies DB exists
-  let companiesDBExists = ss.getSheetByName('Companies DB') !== null;
   getOrCreateCompaniesDB(ss);
-  if (!companiesDBExists) {
-    Logger.log('[INIT] Companies DB is new, fetching all companies from HubSpot...');
-    fetchAllCompaniesFromHubSpot(ss);
-  }
-  
-  // Owner DB - just create if doesn't exist (owners are fetched on-demand)
   getOrCreateOwnerDB(ss);
+  
+  // Collect IDs from pipeline sheets
+  Logger.log('[INIT] Collecting IDs from pipeline sheets...');
+  const contactIds = collectContactIdsFromPipelines(ss);
+  const companyIds = collectCompanyIdsFromPipelines(ss);
+  const ownerIds = collectOwnerIdsFromPipelines(ss);
+  
+  Logger.log(`[INIT] Found in pipelines: ${contactIds.length} contacts, ${companyIds.length} companies, ${ownerIds.length} owners`);
+  
+  // Fetch only the records that are referenced in pipelines
+  if (contactIds.length > 0) {
+    fetchContactsByIds(ss, contactIds);
+  }
+  if (companyIds.length > 0) {
+    fetchCompaniesByIds(ss, companyIds);
+  }
+  if (ownerIds.length > 0) {
+    // Fetch owners individually (no batch search available)
+    const existingOwners = loadOwnerDB(ss);
+    ownerIds.forEach(ownerId => {
+      if (!existingOwners[ownerId]) {
+        fetchOwnerFromHubSpot(ss, ownerId);
+      }
+    });
+  }
   
   Logger.log('--- [INIT] Enrichment DBs initialized ---');
 }
@@ -888,25 +1056,17 @@ function syncNewIDsToDBs() {
   
   Logger.log(`[SCAN] Found ${newContactIds.size} new contacts, ${newCompanyIds.size} new companies, ${newOwnerIds.size} new owners`);
   
-  // Fetch and add new contacts
+  // Fetch and add new contacts using batch API
   if (newContactIds.size > 0) {
-    Logger.log(`[CONTACT DB] Adding ${newContactIds.size} new contacts`);
-    newContactIds.forEach(contactId => {
-      getEnrichedContactData(ss, contactId);
-      Utilities.sleep(100);
-    });
+    fetchContactsByIds(ss, Array.from(newContactIds));
   }
   
-  // Fetch and add new companies
+  // Fetch and add new companies using batch API
   if (newCompanyIds.size > 0) {
-    Logger.log(`[COMPANIES DB] Adding ${newCompanyIds.size} new companies`);
-    newCompanyIds.forEach(companyId => {
-      getEnrichedCompanyData(ss, companyId);
-      Utilities.sleep(100);
-    });
+    fetchCompaniesByIds(ss, Array.from(newCompanyIds));
   }
   
-  // Fetch and add new owners
+  // Fetch and add new owners (individual API calls - no batch search available)
   if (newOwnerIds.size > 0) {
     Logger.log(`[OWNER DB] Adding ${newOwnerIds.size} new owners`);
     newOwnerIds.forEach(ownerId => {

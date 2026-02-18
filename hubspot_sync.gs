@@ -29,121 +29,122 @@
 
 /**
  * 1. MAINTENANCE FUNCTIONS
- * Updates 'Last Modified Date' using Deal ID.
+ * Updates 'Last Modified Date' for all deals in all pipeline sheets.
  */
 function updateLastModifiedForExistingDeals() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const sheet = ss.getActiveSheet();
-  const data = sheet.getDataRange().getValues();
+  const pipelines = Object.values(CONFIG.PIPELINE_MAP);
   
-  Logger.log(`--- [START] Update Last Modified for Sheet: ${sheet.getName()} ---`);
+  Logger.log('--- [START] Update Last Modified for All Pipeline Sheets ---');
   
-  if (data.length <= 2) {
-    Logger.log('!!! Error: Sheet has no data rows (only headers).');
-    SpreadsheetApp.getUi().alert('No data found in the active sheet below the headers.');
-    return;
-  }
-
-  const idIndex = 8; 
-  const modifiedDateIndex = 10; 
+  let totalUpdated = 0;
+  let totalSheetsProcessed = 0;
   
-  // Extraction of Deal IDs from Column I
-  const dealIds = data.slice(2).map((row, index) => {
-    const val = row[idIndex] ? row[idIndex].toString().trim() : '';
-    const isNumeric = /^\d+$/.test(val);
+  pipelines.forEach(sheetName => {
+    const sheet = ss.getSheetByName(sheetName);
+    if (!sheet) {
+      Logger.log(`[SKIP] Sheet not found: ${sheetName}`);
+      return;
+    }
     
-    if (val === "") {
-        // Skip empty cells silently or log if debugging
+    Logger.log(`[PROCESSING] Sheet: ${sheetName}`);
+    const data = sheet.getDataRange().getValues();
+    
+    if (data.length <= 2) {
+      Logger.log(`[SKIP] Sheet ${sheetName} has no data rows.`);
+      return;
+    }
+    
+    const idIndex = 8; 
+    const modifiedDateIndex = 10; 
+    
+    // Extraction of Deal IDs from Column I
+    const dealIds = data.slice(2).map((row, index) => {
+      const val = row[idIndex] ? row[idIndex].toString().trim() : '';
+      const isNumeric = /^\d+$/.test(val);
+      
+      if (val === "") return null;
+      if (!isNumeric) {
+        Logger.log(`[VALIDATION] ${sheetName} Row ${index + 3}: Skipping invalid ID format: "${val}"`);
         return null;
-    }
-    
-    if (!isNumeric) {
-      Logger.log(`[VALIDATION] Row ${index + 3}: Skipping invalid ID format: "${val}"`);
-      return null;
-    }
-    
-    return val;
-  }).filter(Boolean);
-  
-  Logger.log(`[INFO] Found ${dealIds.length} valid numeric IDs to check against HubSpot.`);
-
-  if (dealIds.length === 0) {
-    const message = `No valid numeric Deal IDs found in Column I (Row 3 onwards) on sheet "${sheet.getName()}".\n\n` +
-                    `Please ensure Column I contains numeric HubSpot Deal IDs.`;
-    Logger.log(`[ABORT] ${message}`);
-    SpreadsheetApp.getUi().alert(message);
-    return;
-  }
-
-  const updateMap = {};
-  const batchSize = 100;
-
-  try {
-    for (let i = 0; i < dealIds.length; i += batchSize) {
-      const chunk = dealIds.slice(i, i + batchSize);
-      Logger.log(`[BATCH] Processing chunk ${Math.floor(i/batchSize) + 1} (${chunk.length} IDs)`);
-
-      const payload = {
-        filterGroups: [{
-          filters: [{ propertyName: 'hs_object_id', operator: 'IN', values: chunk }]
-        }],
-        properties: ['hs_lastmodifieddate'],
-        limit: 100
-      };
-
-      try {
-        const response = urlFetchWithRetry('https://api.hubapi.com/crm/v3/objects/deals/search', {
-          method: 'POST',
-          headers: { 
-            'Authorization': 'Bearer ' + CONFIG.HUBSPOT_TOKEN, 
-            'Content-Type': 'application/json' 
-          },
-          payload: JSON.stringify(payload)
-        });
-
-        const results = JSON.parse(response.getContentText()).results || [];
-        Logger.log(`[SUCCESS] Batch search returned ${results.length} deals.`);
-        
-        results.forEach(deal => {
-          updateMap[deal.id] = deal.properties.hs_lastmodifieddate;
-        });
-      } catch (batchError) {
-        Logger.log(`[RETRY] Batch search failed: ${batchError.message}. Attempting individual lookups...`);
-        chunk.forEach(singleId => {
-          try {
-            const singleResponse = urlFetchWithRetry(`https://api.hubapi.com/crm/v3/objects/deals/${singleId}?properties=hs_lastmodifieddate`, {
-              method: 'GET',
-              headers: { 
-                'Authorization': 'Bearer ' + CONFIG.HUBSPOT_TOKEN, 
-                'Content-Type': 'application/json' 
-              }
-            });
-            const deal = JSON.parse(singleResponse.getContentText());
-            if (deal && deal.id) {
-              updateMap[deal.id] = deal.properties.hs_lastmodifieddate;
-              Logger.log(`[INDIVIDUAL] Updated Deal ID: ${singleId}`);
-            }
-          } catch (itemError) {
-            Logger.log(`[ERROR] Could not fetch Deal ID ${singleId}: ${itemError.message}`);
-          }
-        });
       }
-      if (dealIds.length > batchSize) Utilities.sleep(150);
+      return val;
+    }).filter(Boolean);
+    
+    Logger.log(`[INFO] ${sheetName}: Found ${dealIds.length} valid Deal IDs.`);
+    
+    if (dealIds.length === 0) return;
+    
+    const updateMap = {};
+    const batchSize = 100;
+    
+    try {
+      for (let i = 0; i < dealIds.length; i += batchSize) {
+        const chunk = dealIds.slice(i, i + batchSize);
+        
+        const payload = {
+          filterGroups: [{
+            filters: [{ propertyName: 'hs_object_id', operator: 'IN', values: chunk }]
+          }],
+          properties: ['hs_lastmodifieddate'],
+          limit: 100
+        };
+        
+        try {
+          const response = urlFetchWithRetry('https://api.hubapi.com/crm/v3/objects/deals/search', {
+            method: 'POST',
+            headers: { 
+              'Authorization': 'Bearer ' + CONFIG.HUBSPOT_TOKEN, 
+              'Content-Type': 'application/json' 
+            },
+            payload: JSON.stringify(payload)
+          });
+          
+          const results = JSON.parse(response.getContentText()).results || [];
+          results.forEach(deal => {
+            updateMap[deal.id] = deal.properties.hs_lastmodifieddate;
+          });
+        } catch (batchError) {
+          Logger.log(`[RETRY] Batch failed for ${sheetName}: ${batchError.message}. Trying individual...`);
+          chunk.forEach(singleId => {
+            try {
+              const singleResponse = urlFetchWithRetry(`https://api.hubapi.com/crm/v3/objects/deals/${singleId}?properties=hs_lastmodifieddate`, {
+                method: 'GET',
+                headers: { 
+                  'Authorization': 'Bearer ' + CONFIG.HUBSPOT_TOKEN, 
+                  'Content-Type': 'application/json' 
+                }
+              });
+              const deal = JSON.parse(singleResponse.getContentText());
+              if (deal && deal.id) {
+                updateMap[deal.id] = deal.properties.hs_lastmodifieddate;
+              }
+            } catch (itemError) {
+              Logger.log(`[ERROR] Could not fetch Deal ID ${singleId}: ${itemError.message}`);
+            }
+          });
+        }
+        if (dealIds.length > batchSize) Utilities.sleep(150);
+      }
+      
+      // Update the sheet
+      const newDateValues = data.slice(2).map(row => {
+        const id = row[idIndex] ? row[idIndex].toString().trim() : '';
+        return [updateMap[id] || row[modifiedDateIndex]];
+      });
+      
+      sheet.getRange(3, modifiedDateIndex + 1, newDateValues.length, 1).setValues(newDateValues);
+      Logger.log(`[SUCCESS] ${sheetName}: Updated ${dealIds.length} deals.`);
+      totalUpdated += dealIds.length;
+      totalSheetsProcessed++;
+      
+    } catch (error) {
+      Logger.log(`[ERROR] ${sheetName}: ${error.message}`);
     }
-
-    Logger.log('[STORAGE] Writing updated timestamps to Column K...');
-    const newDateValues = data.slice(2).map(row => {
-      const id = row[idIndex] ? row[idIndex].toString().trim() : '';
-      return [updateMap[id] || row[modifiedDateIndex]];
-    });
-
-    sheet.getRange(3, modifiedDateIndex + 1, newDateValues.length, 1).setValues(newDateValues);
-    Logger.log('--- [FINISH] Update Complete ---');
-    SpreadsheetApp.getUi().alert(`Last Modified Dates updated successfully.`);
-  } catch (error) {
-    Logger.log(`[CRITICAL] Error in update function: ${error.message}`);
-    SpreadsheetApp.getUi().alert('Error updating dates: ' + error.message);
-  }
+  });
+  
+  Logger.log(`--- [FINISH] Updated ${totalUpdated} deals across ${totalSheetsProcessed} sheets ---`);
+  SpreadsheetApp.getUi().alert(`Last Modified Dates updated for ${totalUpdated} deals across ${totalSheetsProcessed} sheets.`);
 }
 
 /**
