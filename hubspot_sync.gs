@@ -3,19 +3,16 @@
  * HUBSPOT SYNC MODULE
  * ============================================================================
  * 
- * This module handles all HubSpot API interactions for importing deal data.
+ * This module handles importing deal data from HubSpot API.
  * 
  * KEY FEATURES:
  * - Syncs deals from 3 pipelines (Sales, CS, Payment)
  * - Batch processing with rate limiting (100 deals per batch, 300ms delay)
  * - Automatic deduplication by Deal ID
- * - Association enrichment (companies, contacts, owners)
  * - Incremental updates based on last modified date
  * 
  * MENU FUNCTIONS:
  * - syncHubSpotDeals()          → Import new/updated deals from HubSpot
- * - syncMissingCompanies()      → Fill missing company associations
- * - syncMissingContacts()       → Fill missing contact associations
  * - updateLastModifiedForExistingDeals() → Refresh last modified dates
  * 
  * CONFIGURATION:
@@ -252,109 +249,7 @@ function dealToRow(deal, sheetName) {
 }
 
 /**
- * 3. UPDATED ASSOCIATION FUNCTIONS (WITH HIERARCHY LOGIC)
- */
-function syncMissingCompanies() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const pipelines = Object.values(CONFIG.PIPELINE_MAP);
-  let totalUpdated = 0;
-
-  Logger.log('--- [START] Company Association Sync ---');
-
-  pipelines.forEach(sheetName => {
-    const sheet = ss.getSheetByName(sheetName);
-    if (!sheet) return;
-
-    const data = sheet.getDataRange().getValues();
-    const DEAL_ID_COL = 8; 
-    const COMPANY_ID_COL = 6;
-    const COMPANY_NAME_COL = 11;
-    const CONTACT_NAME_COL = 12;
-    const CONTACT_EMAIL_COL = 14;
-    
-    const missing = [];
-    for (let i = 2; i < data.length; i++) {
-      if (data[i][DEAL_ID_COL] && (!data[i][COMPANY_ID_COL] || data[i][COMPANY_ID_COL] === "")) {
-        missing.push({ 
-          row: i + 1, 
-          id: data[i][DEAL_ID_COL].toString(),
-          contactName: data[i][CONTACT_NAME_COL],
-          contactEmail: data[i][CONTACT_EMAIL_COL]
-        });
-      }
-    }
-
-    if (missing.length > 0) {
-      Logger.log(`[INFO] Found ${missing.length} deals missing company info in ${sheetName}`);
-      for (let i = 0; i < missing.length; i += 100) {
-        const batch = missing.slice(i, i + 100);
-        const batchIds = batch.map(item => item.id);
-        const associations = callHubSpotBatchAssociations(batchIds, 'companies');
-        
-        batch.forEach((item) => {
-          const foundId = associations[item.id];
-          if (foundId) {
-            sheet.getRange(item.row, COMPANY_ID_COL + 1).setValue(foundId);
-          } else {
-            let fallbackName = "";
-            if (item.contactName && item.contactName !== "N/A" && item.contactName !== "") {
-              fallbackName = `Individual-(${item.contactName})`;
-            } else if (item.contactEmail && item.contactEmail !== "") {
-              fallbackName = item.contactEmail;
-            }
-            if (fallbackName !== "") sheet.getRange(item.row, COMPANY_NAME_COL + 1).setValue(fallbackName);
-          }
-        });
-        totalUpdated += batch.length;
-        Utilities.sleep(300);
-      }
-    }
-  });
-  Logger.log(`--- [FINISH] Company Sync. Total Checked: ${totalUpdated} ---`);
-}
-
-function syncMissingContacts() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const pipelines = Object.values(CONFIG.PIPELINE_MAP);
-  let totalUpdated = 0;
-
-  Logger.log('--- [START] Contact Association Sync ---');
-
-  pipelines.forEach(sheetName => {
-    const sheet = ss.getSheetByName(sheetName);
-    if (!sheet) return;
-
-    const data = sheet.getDataRange().getValues();
-    const DEAL_ID_COL = 8;
-    const CONTACT_ID_COL = 7;
-    
-    const missing = [];
-    for (let i = 2; i < data.length; i++) {
-      if (data[i][DEAL_ID_COL] && (!data[i][CONTACT_ID_COL] || data[i][CONTACT_ID_COL] === "")) {
-        missing.push({ row: i + 1, id: data[i][DEAL_ID_COL].toString() });
-      }
-    }
-
-    if (missing.length > 0) {
-      Logger.log(`[INFO] Found ${missing.length} deals missing contact info in ${sheetName}`);
-      for (let i = 0; i < missing.length; i += 100) {
-        const batch = missing.slice(i, i + 100);
-        const batchIds = batch.map(item => item.id);
-        const associations = callHubSpotBatchAssociations(batchIds, 'contacts');
-        
-        batch.forEach((item) => {
-          sheet.getRange(item.row, CONTACT_ID_COL + 1).setValue(associations[item.id] || "N/A");
-        });
-        totalUpdated += batch.length;
-        Utilities.sleep(300); 
-      }
-    }
-  });
-  Logger.log(`--- [FINISH] Contact Sync complete ---`);
-}
-
-/**
- * 4. HELPERS & UTILITIES
+ * 3. HELPERS & UTILITIES
  */
 function finalizeSheets(ss) {
   const pipelines = Object.values(CONFIG.PIPELINE_MAP);
@@ -381,46 +276,6 @@ function groupDealsByPipeline(deals) {
   }, {});
 }
 
-function callHubSpotBatchAssociations(dealIds, toObjectType) {
-  const url = `https://api.hubapi.com/crm/v3/associations/deals/${toObjectType}/batch/read`;
-  const payload = { inputs: dealIds.map(id => ({ id })) };
-  const response = urlFetchWithRetry(url, {
-    method: 'POST',
-    headers: { 'Authorization': 'Bearer ' + CONFIG.HUBSPOT_TOKEN, 'Content-Type': 'application/json' },
-    payload: JSON.stringify(payload)
-  });
-  const results = {};
-  if (response) {
-    const data = JSON.parse(response.getContentText());
-    if (data.results) {
-      data.results.forEach(res => { if (res.to && res.to.length > 0) results[res.from.id] = res.to[0].id; });
-    }
-  }
-  return results;
-}
-
-function urlFetchWithRetry(url, options) {
-  let retries = 0;
-  while (retries < 4) {
-    const response = UrlFetchApp.fetch(url, { ...options, muteHttpExceptions: true });
-    const code = response.getResponseCode();
-    if (code === 200 || code === 207) return response;
-    if ([429, 503, 403].includes(code)) {
-      Utilities.sleep(Math.pow(2, retries) * 1000);
-      retries++;
-    } else throw new Error(`API error ${code}: ${response.getContentText()}`);
-  }
-  return null;
-}
-
-function parseFlexibleDate(dateString) {
-  if (!dateString) return new Date(0);
-  let normalized = dateString.toString().trim();
-  if (/^\d{4}-\d{2}-\d{2}$/.test(normalized)) normalized += 'T00:00:00.000Z';
-  const parsed = Date.parse(normalized);
-  return isNaN(parsed) ? new Date(0) : new Date(parsed);
-}
-
 function getLastUpdatedTimestamp(ss) {
   const sheet = ss.getSheetByName(CONFIG.PIPELINE_MAP['default']);
   if (sheet) {
@@ -444,4 +299,31 @@ function applySheetFormatting(sheet) {
     sheet.getRange(2, 1, lastRow - 1, HEADERS.length).createFilter();
     for (let i = 1; i <= HEADERS.length; i++) sheet.autoResizeColumn(i);
   }
+}
+
+/**
+ * 4. SHARED UTILITIES
+ * These functions are shared with hubspot_enrich.gs
+ */
+
+function urlFetchWithRetry(url, options) {
+  let retries = 0;
+  while (retries < 4) {
+    const response = UrlFetchApp.fetch(url, { ...options, muteHttpExceptions: true });
+    const code = response.getResponseCode();
+    if (code === 200 || code === 207) return response;
+    if ([429, 503, 403].includes(code)) {
+      Utilities.sleep(Math.pow(2, retries) * 1000);
+      retries++;
+    } else throw new Error(`API error ${code}: ${response.getContentText()}`);
+  }
+  return null;
+}
+
+function parseFlexibleDate(dateString) {
+  if (!dateString) return new Date(0);
+  let normalized = dateString.toString().trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(normalized)) normalized += 'T00:00:00.000Z';
+  const parsed = Date.parse(normalized);
+  return isNaN(parsed) ? new Date(0) : new Date(parsed);
 }
