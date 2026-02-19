@@ -1,30 +1,85 @@
 /**
  * ============================================================================
- * HUBSPOT SYNC MODULE
+ * HUBSPOT DEALS TO GOOGLE SHEETS IMPORTER
  * ============================================================================
  * 
- * This module handles all HubSpot API interactions for importing deal data.
+ * Professional Google Apps Script Integration for HubSpot CRM Data
+ * 
+ * OVERVIEW:
+ * This script provides robust integration between HubSpot CRM and Google Sheets.
+ * It automatically imports deal data from multiple HubSpot pipelines with
+ * real-time progress tracking and intelligent date-based filtering.
  * 
  * KEY FEATURES:
- * - Syncs deals from 3 pipelines (Sales, CS, Payment)
- * - Batch processing with rate limiting (100 deals per batch, 300ms delay)
- * - Automatic deduplication by Deal ID
- * - Association enrichment (companies, contacts, owners)
- * - Incremental updates based on last modified date
+ * 
+ * 🎯 Non-Developer Friendly Design
+ * - Centralized Configuration: All settings in SYNC_SETTINGS object
+ * - No Coding Required: Modify pipeline IDs, date ranges without touching logic
+ * - Clear Documentation: Inline comments explain each parameter
+ * 
+ * 📊 Multi-Pipeline Support
+ * - Imports from 3 HubSpot pipelines:
+ *   * Sales Pipeline (ID: 70710959)
+ *   * CS Pipeline (ID: 679755281)
+ *   * Payment Pipeline (default)
+ * - Automatic stage name mapping:
+ *   * Closed Won (Sales) - Stage: 136833349
+ *   * Revenue (Payment) - Stage: closedwon
+ *   * Closed Won (Payment) - Stage: 996632637
+ * 
+ * 📅 Smart Date Filtering (Priority Order):
+ * 1. Reads Report_Start_Date from Config Sheet E8 (if set)
+ * 2. Falls back to most recent Last Modified date from pipeline data
+ * 3. Final fallback to DEFAULT_START_DATE ('2023-01-01')
+ * - Only imports deals created/modified after the determined date
+ * 
+ * 📋 Comprehensive Data Capture (15 Fields):
+ * Column | Data Point          | HubSpot Property
+ * -------|---------------------|------------------
+ * A      | Deal Name           | dealname
+ * B      | Amount              | amount
+ * C      | Date Created        | createdate
+ * D      | Stage Name          | dealstage (mapped)
+ * E      | Pipeline            | pipeline
+ * F      | Owner ID            | hubspot_owner_id
+ * G      | Company ID          | (association)
+ * H      | Contact ID          | (association)
+ * I      | Deal ID             | hs_object_id
+ * J      | Close Date          | closedate
+ * K      | Last Modified Date  | hs_lastmodifieddate
+ * L      | Company Name        | (enriched)
+ * M      | Contact Name        | (enriched)
+ * N      | Owner Name          | (enriched)
+ * O      | Contact Email       | (enriched)
+ * 
+ * 📈 Real-Time Progress Tracking
+ * - Dedicated "Progress Sheet" displays live sync status
+ * - Logs total deals found across all pipelines
+ * - Breaks down counts by individual pipeline
+ * - Updates in real-time during import
+ * 
+ * ✨ Automatic Formatting & Organization
+ * - Auto-Sort: By "Date Created" descending (newest first)
+ * - Header Styling: Professional blue header formatting
+ * - Frozen Headers: Top rows frozen for easy scrolling
+ * - Clean Layout: Consistent formatting across all sheets
+ * 
+ * 🔧 Technical Highlights
+ * - HubSpot API v3 integration
+ * - Pagination handling with 10k result limit restart
+ * - Batch processing (100 deals per API call)
+ * - Error handling with exponential backoff
+ * - Rate limiting (300ms between batches)
+ * - Deduplication by Deal ID
  * 
  * MENU FUNCTIONS:
  * - syncHubSpotDeals()          → Import new/updated deals from HubSpot
- * - syncMissingCompanies()      → Fill missing company associations
- * - syncMissingContacts()       → Fill missing contact associations
  * - updateLastModifiedForExistingDeals() → Refresh last modified dates
  * 
  * CONFIGURATION:
- * - Uses CONFIG object from Config file
- * - Requires HUBSPOT_TOKEN to be set
- * - Respects API rate limits with exponential backoff
- * 
- * DATA FLOW:
- * HubSpot API → Pipeline Sheets (Sales/CS/Payment) → Temp Sheet → Reports
+ * - Edit SYNC_SETTINGS in Config.gs file
+ * - Set HUBSPOT_TOKEN for API access
+ * - Optionally set Report_Start_Date in Config_sheet!E8
  * 
  * See README.md for complete documentation.
  * ============================================================================
@@ -32,121 +87,122 @@
 
 /**
  * 1. MAINTENANCE FUNCTIONS
- * Updates 'Last Modified Date' using Deal ID.
+ * Updates 'Last Modified Date' for all deals in all pipeline sheets.
  */
 function updateLastModifiedForExistingDeals() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const sheet = ss.getActiveSheet();
-  const data = sheet.getDataRange().getValues();
+  const pipelines = Object.values(CONFIG.PIPELINE_MAP);
   
-  Logger.log(`--- [START] Update Last Modified for Sheet: ${sheet.getName()} ---`);
+  Logger.log('--- [START] Update Last Modified for All Pipeline Sheets ---');
   
-  if (data.length <= 2) {
-    Logger.log('!!! Error: Sheet has no data rows (only headers).');
-    SpreadsheetApp.getUi().alert('No data found in the active sheet below the headers.');
-    return;
-  }
-
-  const idIndex = 8; 
-  const modifiedDateIndex = 10; 
+  let totalUpdated = 0;
+  let totalSheetsProcessed = 0;
   
-  // Extraction of Deal IDs from Column I
-  const dealIds = data.slice(2).map((row, index) => {
-    const val = row[idIndex] ? row[idIndex].toString().trim() : '';
-    const isNumeric = /^\d+$/.test(val);
+  pipelines.forEach(sheetName => {
+    const sheet = ss.getSheetByName(sheetName);
+    if (!sheet) {
+      Logger.log(`[SKIP] Sheet not found: ${sheetName}`);
+      return;
+    }
     
-    if (val === "") {
-        // Skip empty cells silently or log if debugging
+    Logger.log(`[PROCESSING] Sheet: ${sheetName}`);
+    const data = sheet.getDataRange().getValues();
+    
+    if (data.length <= 2) {
+      Logger.log(`[SKIP] Sheet ${sheetName} has no data rows.`);
+      return;
+    }
+    
+    const idIndex = 8; 
+    const modifiedDateIndex = 10; 
+    
+    // Extraction of Deal IDs from Column I
+    const dealIds = data.slice(2).map((row, index) => {
+      const val = row[idIndex] ? row[idIndex].toString().trim() : '';
+      const isNumeric = /^\d+$/.test(val);
+      
+      if (val === "") return null;
+      if (!isNumeric) {
+        Logger.log(`[VALIDATION] ${sheetName} Row ${index + 3}: Skipping invalid ID format: "${val}"`);
         return null;
-    }
-    
-    if (!isNumeric) {
-      Logger.log(`[VALIDATION] Row ${index + 3}: Skipping invalid ID format: "${val}"`);
-      return null;
-    }
-    
-    return val;
-  }).filter(Boolean);
-  
-  Logger.log(`[INFO] Found ${dealIds.length} valid numeric IDs to check against HubSpot.`);
-
-  if (dealIds.length === 0) {
-    const message = `No valid numeric Deal IDs found in Column I (Row 3 onwards) on sheet "${sheet.getName()}".\n\n` +
-                    `Please ensure Column I contains numeric HubSpot Deal IDs.`;
-    Logger.log(`[ABORT] ${message}`);
-    SpreadsheetApp.getUi().alert(message);
-    return;
-  }
-
-  const updateMap = {};
-  const batchSize = 100;
-
-  try {
-    for (let i = 0; i < dealIds.length; i += batchSize) {
-      const chunk = dealIds.slice(i, i + batchSize);
-      Logger.log(`[BATCH] Processing chunk ${Math.floor(i/batchSize) + 1} (${chunk.length} IDs)`);
-
-      const payload = {
-        filterGroups: [{
-          filters: [{ propertyName: 'hs_object_id', operator: 'IN', values: chunk }]
-        }],
-        properties: ['hs_lastmodifieddate'],
-        limit: 100
-      };
-
-      try {
-        const response = urlFetchWithRetry('https://api.hubapi.com/crm/v3/objects/deals/search', {
-          method: 'POST',
-          headers: { 
-            'Authorization': 'Bearer ' + CONFIG.HUBSPOT_TOKEN, 
-            'Content-Type': 'application/json' 
-          },
-          payload: JSON.stringify(payload)
-        });
-
-        const results = JSON.parse(response.getContentText()).results || [];
-        Logger.log(`[SUCCESS] Batch search returned ${results.length} deals.`);
-        
-        results.forEach(deal => {
-          updateMap[deal.id] = deal.properties.hs_lastmodifieddate;
-        });
-      } catch (batchError) {
-        Logger.log(`[RETRY] Batch search failed: ${batchError.message}. Attempting individual lookups...`);
-        chunk.forEach(singleId => {
-          try {
-            const singleResponse = urlFetchWithRetry(`https://api.hubapi.com/crm/v3/objects/deals/${singleId}?properties=hs_lastmodifieddate`, {
-              method: 'GET',
-              headers: { 
-                'Authorization': 'Bearer ' + CONFIG.HUBSPOT_TOKEN, 
-                'Content-Type': 'application/json' 
-              }
-            });
-            const deal = JSON.parse(singleResponse.getContentText());
-            if (deal && deal.id) {
-              updateMap[deal.id] = deal.properties.hs_lastmodifieddate;
-              Logger.log(`[INDIVIDUAL] Updated Deal ID: ${singleId}`);
-            }
-          } catch (itemError) {
-            Logger.log(`[ERROR] Could not fetch Deal ID ${singleId}: ${itemError.message}`);
-          }
-        });
       }
-      if (dealIds.length > batchSize) Utilities.sleep(150);
+      return val;
+    }).filter(Boolean);
+    
+    Logger.log(`[INFO] ${sheetName}: Found ${dealIds.length} valid Deal IDs.`);
+    
+    if (dealIds.length === 0) return;
+    
+    const updateMap = {};
+    const batchSize = 100;
+    
+    try {
+      for (let i = 0; i < dealIds.length; i += batchSize) {
+        const chunk = dealIds.slice(i, i + batchSize);
+        
+        const payload = {
+          filterGroups: [{
+            filters: [{ propertyName: 'hs_object_id', operator: 'IN', values: chunk }]
+          }],
+          properties: ['hs_lastmodifieddate'],
+          limit: 100
+        };
+        
+        try {
+          const response = urlFetchWithRetry('https://api.hubapi.com/crm/v3/objects/deals/search', {
+            method: 'POST',
+            headers: { 
+              'Authorization': 'Bearer ' + CONFIG.HUBSPOT_TOKEN, 
+              'Content-Type': 'application/json' 
+            },
+            payload: JSON.stringify(payload)
+          });
+          
+          const results = JSON.parse(response.getContentText()).results || [];
+          results.forEach(deal => {
+            updateMap[deal.id] = deal.properties.hs_lastmodifieddate;
+          });
+        } catch (batchError) {
+          Logger.log(`[RETRY] Batch failed for ${sheetName}: ${batchError.message}. Trying individual...`);
+          chunk.forEach(singleId => {
+            try {
+              const singleResponse = urlFetchWithRetry(`https://api.hubapi.com/crm/v3/objects/deals/${singleId}?properties=hs_lastmodifieddate`, {
+                method: 'GET',
+                headers: { 
+                  'Authorization': 'Bearer ' + CONFIG.HUBSPOT_TOKEN, 
+                  'Content-Type': 'application/json' 
+                }
+              });
+              const deal = JSON.parse(singleResponse.getContentText());
+              if (deal && deal.id) {
+                updateMap[deal.id] = deal.properties.hs_lastmodifieddate;
+              }
+            } catch (itemError) {
+              Logger.log(`[ERROR] Could not fetch Deal ID ${singleId}: ${itemError.message}`);
+            }
+          });
+        }
+        if (dealIds.length > batchSize) Utilities.sleep(150);
+      }
+      
+      // Update the sheet
+      const newDateValues = data.slice(2).map(row => {
+        const id = row[idIndex] ? row[idIndex].toString().trim() : '';
+        return [updateMap[id] || row[modifiedDateIndex]];
+      });
+      
+      sheet.getRange(3, modifiedDateIndex + 1, newDateValues.length, 1).setValues(newDateValues);
+      Logger.log(`[SUCCESS] ${sheetName}: Updated ${dealIds.length} deals.`);
+      totalUpdated += dealIds.length;
+      totalSheetsProcessed++;
+      
+    } catch (error) {
+      Logger.log(`[ERROR] ${sheetName}: ${error.message}`);
     }
-
-    Logger.log('[STORAGE] Writing updated timestamps to Column K...');
-    const newDateValues = data.slice(2).map(row => {
-      const id = row[idIndex] ? row[idIndex].toString().trim() : '';
-      return [updateMap[id] || row[modifiedDateIndex]];
-    });
-
-    sheet.getRange(3, modifiedDateIndex + 1, newDateValues.length, 1).setValues(newDateValues);
-    Logger.log('--- [FINISH] Update Complete ---');
-    SpreadsheetApp.getUi().alert(`Last Modified Dates updated successfully.`);
-  } catch (error) {
-    Logger.log(`[CRITICAL] Error in update function: ${error.message}`);
-    SpreadsheetApp.getUi().alert('Error updating dates: ' + error.message);
-  }
+  });
+  
+  Logger.log(`--- [FINISH] Updated ${totalUpdated} deals across ${totalSheetsProcessed} sheets ---`);
+  SpreadsheetApp.getUi().alert(`Last Modified Dates updated for ${totalUpdated} deals across ${totalSheetsProcessed} sheets.`);
 }
 
 /**
@@ -168,15 +224,32 @@ function syncHubSpotDeals() {
     let after = null;
     let totalSynced = 0;
     let batchNumber = 1;
+    let currentStartTimestamp = startTimestamp;
+    const HUBSPOT_SEARCH_LIMIT = 10000; // HubSpot search API limit
 
     do {
+      // HubSpot has a 10,000 result limit on search API
+      // After 9900 results, we need to restart with a new timestamp
+      if (totalSynced > 0 && totalSynced % HUBSPOT_SEARCH_LIMIT >= 9900) {
+        Logger.log(`[PAGINATION] Approaching ${HUBSPOT_SEARCH_LIMIT} result limit. Restarting with new timestamp.`);
+        updateProgressSheet(progressSheet, `Restarting search with updated timestamp to bypass 10k limit...`);
+        
+        // Use the most recent modified date from our data as the new starting point
+        const newTimestamp = getLastUpdatedTimestamp(ss);
+        currentStartTimestamp = parseFlexibleDate(newTimestamp);
+        after = null; // Reset pagination
+        
+        // Small delay before restarting
+        Utilities.sleep(1000);
+      }
+      
       Logger.log(`[FETCH] Fetching batch (Current Total: ${totalSynced})...`);
       updateProgressSheet(progressSheet, `Fetching batch ${batchNumber} (Current Total: ${totalSynced})...`);
       
       const payload = {
         filterGroups: [{
           filters: [
-            { propertyName: 'hs_lastmodifieddate', operator: 'GTE', value: startTimestamp.getTime().toString() },
+            { propertyName: 'hs_lastmodifieddate', operator: 'GTE', value: currentStartTimestamp.getTime().toString() },
             { propertyName: 'dealstage', operator: 'IN', values: STAGE_IDS }
           ]
         }],
@@ -192,6 +265,12 @@ function syncHubSpotDeals() {
       });
 
       const data = JSON.parse(response.getContentText());
+      
+      // Check for API errors
+      if (data.status === 'error') {
+        throw new Error(`HubSpot API error: ${data.message}`);
+      }
+      
       const deals = data.results || [];
       
       if (deals.length > 0) {
@@ -252,109 +331,7 @@ function dealToRow(deal, sheetName) {
 }
 
 /**
- * 3. UPDATED ASSOCIATION FUNCTIONS (WITH HIERARCHY LOGIC)
- */
-function syncMissingCompanies() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const pipelines = Object.values(CONFIG.PIPELINE_MAP);
-  let totalUpdated = 0;
-
-  Logger.log('--- [START] Company Association Sync ---');
-
-  pipelines.forEach(sheetName => {
-    const sheet = ss.getSheetByName(sheetName);
-    if (!sheet) return;
-
-    const data = sheet.getDataRange().getValues();
-    const DEAL_ID_COL = 8; 
-    const COMPANY_ID_COL = 6;
-    const COMPANY_NAME_COL = 11;
-    const CONTACT_NAME_COL = 12;
-    const CONTACT_EMAIL_COL = 14;
-    
-    const missing = [];
-    for (let i = 2; i < data.length; i++) {
-      if (data[i][DEAL_ID_COL] && (!data[i][COMPANY_ID_COL] || data[i][COMPANY_ID_COL] === "")) {
-        missing.push({ 
-          row: i + 1, 
-          id: data[i][DEAL_ID_COL].toString(),
-          contactName: data[i][CONTACT_NAME_COL],
-          contactEmail: data[i][CONTACT_EMAIL_COL]
-        });
-      }
-    }
-
-    if (missing.length > 0) {
-      Logger.log(`[INFO] Found ${missing.length} deals missing company info in ${sheetName}`);
-      for (let i = 0; i < missing.length; i += 100) {
-        const batch = missing.slice(i, i + 100);
-        const batchIds = batch.map(item => item.id);
-        const associations = callHubSpotBatchAssociations(batchIds, 'companies');
-        
-        batch.forEach((item) => {
-          const foundId = associations[item.id];
-          if (foundId) {
-            sheet.getRange(item.row, COMPANY_ID_COL + 1).setValue(foundId);
-          } else {
-            let fallbackName = "";
-            if (item.contactName && item.contactName !== "N/A" && item.contactName !== "") {
-              fallbackName = `Individual-(${item.contactName})`;
-            } else if (item.contactEmail && item.contactEmail !== "") {
-              fallbackName = item.contactEmail;
-            }
-            if (fallbackName !== "") sheet.getRange(item.row, COMPANY_NAME_COL + 1).setValue(fallbackName);
-          }
-        });
-        totalUpdated += batch.length;
-        Utilities.sleep(300);
-      }
-    }
-  });
-  Logger.log(`--- [FINISH] Company Sync. Total Checked: ${totalUpdated} ---`);
-}
-
-function syncMissingContacts() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const pipelines = Object.values(CONFIG.PIPELINE_MAP);
-  let totalUpdated = 0;
-
-  Logger.log('--- [START] Contact Association Sync ---');
-
-  pipelines.forEach(sheetName => {
-    const sheet = ss.getSheetByName(sheetName);
-    if (!sheet) return;
-
-    const data = sheet.getDataRange().getValues();
-    const DEAL_ID_COL = 8;
-    const CONTACT_ID_COL = 7;
-    
-    const missing = [];
-    for (let i = 2; i < data.length; i++) {
-      if (data[i][DEAL_ID_COL] && (!data[i][CONTACT_ID_COL] || data[i][CONTACT_ID_COL] === "")) {
-        missing.push({ row: i + 1, id: data[i][DEAL_ID_COL].toString() });
-      }
-    }
-
-    if (missing.length > 0) {
-      Logger.log(`[INFO] Found ${missing.length} deals missing contact info in ${sheetName}`);
-      for (let i = 0; i < missing.length; i += 100) {
-        const batch = missing.slice(i, i + 100);
-        const batchIds = batch.map(item => item.id);
-        const associations = callHubSpotBatchAssociations(batchIds, 'contacts');
-        
-        batch.forEach((item) => {
-          sheet.getRange(item.row, CONTACT_ID_COL + 1).setValue(associations[item.id] || "N/A");
-        });
-        totalUpdated += batch.length;
-        Utilities.sleep(300); 
-      }
-    }
-  });
-  Logger.log(`--- [FINISH] Contact Sync complete ---`);
-}
-
-/**
- * 4. HELPERS & UTILITIES
+ * 3. HELPERS & UTILITIES
  */
 function finalizeSheets(ss) {
   const pipelines = Object.values(CONFIG.PIPELINE_MAP);
@@ -381,23 +358,87 @@ function groupDealsByPipeline(deals) {
   }, {});
 }
 
-function callHubSpotBatchAssociations(dealIds, toObjectType) {
-  const url = `https://api.hubapi.com/crm/v3/associations/deals/${toObjectType}/batch/read`;
-  const payload = { inputs: dealIds.map(id => ({ id })) };
-  const response = urlFetchWithRetry(url, {
-    method: 'POST',
-    headers: { 'Authorization': 'Bearer ' + CONFIG.HUBSPOT_TOKEN, 'Content-Type': 'application/json' },
-    payload: JSON.stringify(payload)
-  });
-  const results = {};
-  if (response) {
-    const data = JSON.parse(response.getContentText());
-    if (data.results) {
-      data.results.forEach(res => { if (res.to && res.to.length > 0) results[res.from.id] = res.to[0].id; });
+function getLastUpdatedTimestamp(ss) {
+  // First, try to read from Config Sheet E8 (Report_Start_Date)
+  try {
+    const configSheet = ss.getSheetByName(CONFIG.CONFIG_SHEET_NAME);
+    if (configSheet) {
+      const reportDateCell = configSheet.getRange('E8').getValue();
+      if (reportDateCell && reportDateCell !== '') {
+        const parsedDate = parseFlexibleDate(reportDateCell);
+        if (parsedDate.getTime() > 0) {
+          Logger.log(`[CONFIG] Using Report_Start_Date from ${CONFIG.CONFIG_SHEET_NAME}!E8: ${parsedDate.toISOString()}`);
+          return parsedDate.toISOString();
+        }
+      }
     }
+  } catch (e) {
+    Logger.log(`[CONFIG] Could not read ${CONFIG.CONFIG_SHEET_NAME}!E8: ${e.message}`);
   }
-  return results;
+  
+  // Second, check pipeline sheets for the most recent last modified date
+  const pipelines = Object.values(CONFIG.PIPELINE_MAP);
+  let latestTimestamp = null;
+  
+  pipelines.forEach(sheetName => {
+    const sheet = ss.getSheetByName(sheetName);
+    if (!sheet) return;
+    
+    // Check A1 for last updated timestamp
+    const val = sheet.getRange('A1').getValue();
+    if (val && val.toString().includes('Last Updated:')) {
+      const timestamp = val.toString().replace('Last Updated: ', '').trim();
+      const parsedDate = parseFlexibleDate(timestamp);
+      if (!latestTimestamp || parsedDate > latestTimestamp) {
+        latestTimestamp = parsedDate;
+      }
+    }
+    
+    // Also check the actual data in column K (Last Modified Date - index 10)
+    const data = sheet.getDataRange().getValues();
+    if (data.length > 2) {
+      for (let i = 2; i < data.length; i++) {
+        const modifiedDate = data[i][10]; // Column K - Last Modified Date
+        if (modifiedDate) {
+          const parsedDate = parseFlexibleDate(modifiedDate);
+          if (!latestTimestamp || parsedDate > latestTimestamp) {
+            latestTimestamp = parsedDate;
+          }
+        }
+      }
+    }
+  });
+  
+  if (latestTimestamp) {
+    Logger.log(`[PIPELINE] Using most recent modified date from pipeline data: ${latestTimestamp.toISOString()}`);
+    return latestTimestamp.toISOString();
+  }
+  
+  // Final fallback to default
+  Logger.log(`[DEFAULT] Using DEFAULT_START: ${CONFIG.DEFAULT_START}`);
+  return CONFIG.DEFAULT_START;
 }
+
+function setupSheetHeaders(sheet) {
+  sheet.getRange('A1').setValue('Last Updated: -').setFontStyle('italic').setFontColor('#666666');
+  sheet.getRange(2, 1, 1, HEADERS.length).setValues([HEADERS]).setBackground('#2563eb').setFontColor('#ffffff').setFontWeight('bold');
+  sheet.setFrozenRows(2);
+}
+
+function applySheetFormatting(sheet) {
+  const lastRow = sheet.getLastRow();
+  if (lastRow > 2) {
+    const filter = sheet.getFilter();
+    if (filter) filter.remove();
+    sheet.getRange(2, 1, lastRow - 1, HEADERS.length).createFilter();
+    for (let i = 1; i <= HEADERS.length; i++) sheet.autoResizeColumn(i);
+  }
+}
+
+/**
+ * 4. SHARED UTILITIES
+ * These functions are shared with hubspot_enrich.gs
+ */
 
 function urlFetchWithRetry(url, options) {
   let retries = 0;
@@ -419,29 +460,4 @@ function parseFlexibleDate(dateString) {
   if (/^\d{4}-\d{2}-\d{2}$/.test(normalized)) normalized += 'T00:00:00.000Z';
   const parsed = Date.parse(normalized);
   return isNaN(parsed) ? new Date(0) : new Date(parsed);
-}
-
-function getLastUpdatedTimestamp(ss) {
-  const sheet = ss.getSheetByName(CONFIG.PIPELINE_MAP['default']);
-  if (sheet) {
-    const val = sheet.getRange('A1').getValue();
-    if (val && val.toString().includes('Last Updated:')) return val.toString().replace('Last Updated: ', '').trim();
-  }
-  return CONFIG.DEFAULT_START;
-}
-
-function setupSheetHeaders(sheet) {
-  sheet.getRange('A1').setValue('Last Updated: -').setFontStyle('italic').setFontColor('#666666');
-  sheet.getRange(2, 1, 1, HEADERS.length).setValues([HEADERS]).setBackground('#2563eb').setFontColor('#ffffff').setFontWeight('bold');
-  sheet.setFrozenRows(2);
-}
-
-function applySheetFormatting(sheet) {
-  const lastRow = sheet.getLastRow();
-  if (lastRow > 2) {
-    const filter = sheet.getFilter();
-    if (filter) filter.remove();
-    sheet.getRange(2, 1, lastRow - 1, HEADERS.length).createFilter();
-    for (let i = 1; i <= HEADERS.length; i++) sheet.autoResizeColumn(i);
-  }
 }
