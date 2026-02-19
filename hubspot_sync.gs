@@ -1,27 +1,85 @@
 /**
  * ============================================================================
- * HUBSPOT SYNC MODULE
+ * HUBSPOT DEALS TO GOOGLE SHEETS IMPORTER
  * ============================================================================
  * 
- * This module handles importing deal data from HubSpot API.
+ * Professional Google Apps Script Integration for HubSpot CRM Data
+ * 
+ * OVERVIEW:
+ * This script provides robust integration between HubSpot CRM and Google Sheets.
+ * It automatically imports deal data from multiple HubSpot pipelines with
+ * real-time progress tracking and intelligent date-based filtering.
  * 
  * KEY FEATURES:
- * - Syncs deals from 3 pipelines (Sales, CS, Payment)
- * - Batch processing with rate limiting (100 deals per batch, 300ms delay)
- * - Automatic deduplication by Deal ID
- * - Incremental updates based on last modified date
+ * 
+ * 🎯 Non-Developer Friendly Design
+ * - Centralized Configuration: All settings in SYNC_SETTINGS object
+ * - No Coding Required: Modify pipeline IDs, date ranges without touching logic
+ * - Clear Documentation: Inline comments explain each parameter
+ * 
+ * 📊 Multi-Pipeline Support
+ * - Imports from 3 HubSpot pipelines:
+ *   * Sales Pipeline (ID: 70710959)
+ *   * CS Pipeline (ID: 679755281)
+ *   * Payment Pipeline (default)
+ * - Automatic stage name mapping:
+ *   * Closed Won (Sales) - Stage: 136833349
+ *   * Revenue (Payment) - Stage: closedwon
+ *   * Closed Won (Payment) - Stage: 996632637
+ * 
+ * 📅 Smart Date Filtering (Priority Order):
+ * 1. Reads Report_Start_Date from Config Sheet E8 (if set)
+ * 2. Falls back to most recent Last Modified date from pipeline data
+ * 3. Final fallback to DEFAULT_START_DATE ('2023-01-01')
+ * - Only imports deals created/modified after the determined date
+ * 
+ * 📋 Comprehensive Data Capture (15 Fields):
+ * Column | Data Point          | HubSpot Property
+ * -------|---------------------|------------------
+ * A      | Deal Name           | dealname
+ * B      | Amount              | amount
+ * C      | Date Created        | createdate
+ * D      | Stage Name          | dealstage (mapped)
+ * E      | Pipeline            | pipeline
+ * F      | Owner ID            | hubspot_owner_id
+ * G      | Company ID          | (association)
+ * H      | Contact ID          | (association)
+ * I      | Deal ID             | hs_object_id
+ * J      | Close Date          | closedate
+ * K      | Last Modified Date  | hs_lastmodifieddate
+ * L      | Company Name        | (enriched)
+ * M      | Contact Name        | (enriched)
+ * N      | Owner Name          | (enriched)
+ * O      | Contact Email       | (enriched)
+ * 
+ * 📈 Real-Time Progress Tracking
+ * - Dedicated "Progress Sheet" displays live sync status
+ * - Logs total deals found across all pipelines
+ * - Breaks down counts by individual pipeline
+ * - Updates in real-time during import
+ * 
+ * ✨ Automatic Formatting & Organization
+ * - Auto-Sort: By "Date Created" descending (newest first)
+ * - Header Styling: Professional blue header formatting
+ * - Frozen Headers: Top rows frozen for easy scrolling
+ * - Clean Layout: Consistent formatting across all sheets
+ * 
+ * 🔧 Technical Highlights
+ * - HubSpot API v3 integration
+ * - Pagination handling with 10k result limit restart
+ * - Batch processing (100 deals per API call)
+ * - Error handling with exponential backoff
+ * - Rate limiting (300ms between batches)
+ * - Deduplication by Deal ID
  * 
  * MENU FUNCTIONS:
  * - syncHubSpotDeals()          → Import new/updated deals from HubSpot
  * - updateLastModifiedForExistingDeals() → Refresh last modified dates
  * 
  * CONFIGURATION:
- * - Uses CONFIG object from Config file
- * - Requires HUBSPOT_TOKEN to be set
- * - Respects API rate limits with exponential backoff
- * 
- * DATA FLOW:
- * HubSpot API → Pipeline Sheets (Sales/CS/Payment) → Temp Sheet → Reports
+ * - Edit SYNC_SETTINGS in Config.gs file
+ * - Set HUBSPOT_TOKEN for API access
+ * - Optionally set Report_Start_Date in Config_sheet!E8
  * 
  * See README.md for complete documentation.
  * ============================================================================
@@ -301,10 +359,27 @@ function groupDealsByPipeline(deals) {
 }
 
 function getLastUpdatedTimestamp(ss) {
+  // First, try to read from Config Sheet E8 (Report_Start_Date)
+  try {
+    const configSheet = ss.getSheetByName(CONFIG.CONFIG_SHEET_NAME);
+    if (configSheet) {
+      const reportDateCell = configSheet.getRange('E8').getValue();
+      if (reportDateCell && reportDateCell !== '') {
+        const parsedDate = parseFlexibleDate(reportDateCell);
+        if (parsedDate.getTime() > 0) {
+          Logger.log(`[CONFIG] Using Report_Start_Date from ${CONFIG.CONFIG_SHEET_NAME}!E8: ${parsedDate.toISOString()}`);
+          return parsedDate.toISOString();
+        }
+      }
+    }
+  } catch (e) {
+    Logger.log(`[CONFIG] Could not read ${CONFIG.CONFIG_SHEET_NAME}!E8: ${e.message}`);
+  }
+  
+  // Second, check pipeline sheets for the most recent last modified date
   const pipelines = Object.values(CONFIG.PIPELINE_MAP);
   let latestTimestamp = null;
   
-  // Check all pipeline sheets for the most recent last modified date
   pipelines.forEach(sheetName => {
     const sheet = ss.getSheetByName(sheetName);
     if (!sheet) return;
@@ -334,7 +409,14 @@ function getLastUpdatedTimestamp(ss) {
     }
   });
   
-  return latestTimestamp ? latestTimestamp.toISOString() : CONFIG.DEFAULT_START;
+  if (latestTimestamp) {
+    Logger.log(`[PIPELINE] Using most recent modified date from pipeline data: ${latestTimestamp.toISOString()}`);
+    return latestTimestamp.toISOString();
+  }
+  
+  // Final fallback to default
+  Logger.log(`[DEFAULT] Using DEFAULT_START: ${CONFIG.DEFAULT_START}`);
+  return CONFIG.DEFAULT_START;
 }
 
 function setupSheetHeaders(sheet) {

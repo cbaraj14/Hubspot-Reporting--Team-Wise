@@ -52,8 +52,47 @@
  */
 
 // ============================================================================
-// 1) CONFIGURATION (CONSOLIDATED & FIXED)
+// 1) SYNC SETTINGS - USER CONFIGURABLE
 // ============================================================================
+// Edit these settings to customize the sync behavior
+// All settings are in one place - no coding required!
+
+const SYNC_SETTINGS = {
+  // --- HubSpot Authentication ---
+  // Get your token from HubSpot Private Apps
+  // Instructions: https://developers.hubspot.com/docs/api/private-apps
+  HUBSPOT_TOKEN: 'your-hubspot-token-here',
+  
+  // --- Date Configuration ---
+  // Default start date if no date is specified in Config Sheet
+  // Format: 'YYYY-MM-DD'
+  DEFAULT_START_DATE: '2023-01-01',
+  
+  // --- Config Sheet Settings ---
+  // Sheet containing sync configuration
+  CONFIG_SHEET_NAME: 'Config_sheet',
+  // Cell containing Report Start Date (E8 = Report_Start_Date)
+  REPORT_START_DATE_CELL: 'E8',
+  // Cell containing Report End Date (E9 = Report_End_Date) - for future use
+  REPORT_END_DATE_CELL: 'E9',
+  // Cell containing Fiscal Year (E7 = Fiscal Year)
+  FISCAL_YEAR_CELL: 'E7',
+  
+  // --- Progress Tracking ---
+  // Sheet name for real-time sync progress
+  PROGRESS_SHEET_NAME: 'Progress_Sheet',
+  
+  // --- Performance Settings ---
+  // Batch size for writing data (higher = faster but less stable)
+  BATCH_SIZE: 2500,
+  // Delay between API calls in milliseconds (increase if hitting rate limits)
+  COOLDOWN_MS: 2000
+};
+
+// ============================================================================
+// 2) CONFIGURATION (CONSOLIDATED & FIXED)
+// ============================================================================
+// Do not modify below this line unless you are a developer
 const CONFIG = (() => {
   // Canonical pipeline mapping
   const PIPELINE_MAP = {
@@ -71,10 +110,8 @@ const CONFIG = (() => {
 
   return {
     // --- HubSpot Auth ---
-    // IMPORTANT: Add your HubSpot Private App token here
-    // See README.md for detailed setup instructions
-    HUBSPOT_TOKEN: 'your-hubspot-token-here',
-    DEFAULT_START: '2023-01-01',
+    HUBSPOT_TOKEN: SYNC_SETTINGS.HUBSPOT_TOKEN,
+    DEFAULT_START: SYNC_SETTINGS.DEFAULT_START_DATE,
 
     // --- Pipeline Definitions ---
     PIPELINE_MAP: PIPELINE_MAP,
@@ -83,7 +120,7 @@ const CONFIG = (() => {
 
     // --- Output / Cache Sheet ---
     TEMP_SHEET_NAME: 'temp sheet',
-    CONFIG_SHEET_NAME: 'Config_sheet',
+    CONFIG_SHEET_NAME: SYNC_SETTINGS.CONFIG_SHEET_NAME,
 
     // --- Team Member Lookups ---
     SALES_TEAM_SHEET: 'Sales_team_Members',
@@ -91,13 +128,18 @@ const CONFIG = (() => {
 
     // --- Fiscal & Processing Logic ---
     FISCAL_YEAR_START_MONTH: 6, // 0=Jan, 6=July. Fiscal Year starts July 1st.
-    BATCH_SIZE: 2500,           // Writing in chunks of 2000 rows for speed/stability
-    COOLDOWN_MS: 2000,  // Increased pause to 2 seconds
+    BATCH_SIZE: SYNC_SETTINGS.BATCH_SIZE,
+    COOLDOWN_MS: SYNC_SETTINGS.COOLDOWN_MS,
 
     // --- Row/Header Structure ---
     PIPELINE_HEADER_ROW: 2,     // Data starts on Row 3
     TEAM_HEADER_ROW: 1,         // Data starts on Row 2
-    REPORT_DATE_CELL: 'E6', // Cell in Config_sheet containing the Report Date
+    
+    // --- Config Sheet Cells ---
+    REPORT_DATE_CELL: SYNC_SETTINGS.REPORT_START_DATE_CELL,
+    REPORT_START_DATE_CELL: SYNC_SETTINGS.REPORT_START_DATE_CELL,
+    REPORT_END_DATE_CELL: SYNC_SETTINGS.REPORT_END_DATE_CELL,
+    FISCAL_YEAR_CELL: SYNC_SETTINGS.FISCAL_YEAR_CELL,
 
     // --- Full 15-Column Mapping (Fixed to match indices 0-14) ---
     SHEET_HEADERS: [
