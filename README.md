@@ -317,6 +317,65 @@ Creates a CS-focused report with revenue forecasting.
 
 ---
 
+## ⚙️ Automatic Daily Refresh
+
+The script supports **automatic daily refresh** to keep your data synchronized without manual intervention.
+
+### How to Enable
+
+1. Open your Google Sheet
+2. Click **HubSpot Sync** → **⚙️ Auto-Refresh Settings** → **Enable Daily Auto-Refresh**
+3. Authorize the script when prompted (required for time-driven triggers)
+4. The script will now run automatically every day at **6:00 AM**
+
+### What Happens During Auto-Refresh
+
+The daily auto-refresh performs the complete sync workflow:
+
+1. **Sync New Deals** - Imports new/updated deals from HubSpot
+2. **Sync Missing Companies** - Fills in missing company associations
+3. **Sync Missing Contacts** - Fills in missing contact associations
+4. **Update ID to Names** - Converts IDs to readable names
+
+### Monitoring Auto-Refresh
+
+- **AutoRefresh_Log Sheet** - A dedicated log sheet is created automatically to track all auto-refresh executions
+- Each run logs:
+  - Timestamp
+  - Status (Started, Success, Error)
+  - Detailed messages for each step
+- The log is automatically trimmed to keep only the last 1000 entries
+
+### Managing Triggers
+
+| Menu Option | Description |
+|------------|-------------|
+| Enable Daily Auto-Refresh | Creates a daily trigger at 6:00 AM |
+| Disable Daily Auto-Refresh | Removes the automatic trigger |
+| View Trigger Status | Shows current trigger configuration |
+
+### Email Notifications (Optional)
+
+To receive email notifications, edit the `Menu.gs` file and:
+
+1. Uncomment the `sendCompletionEmail()` call in `dailyAutoRefresh()`
+2. Uncomment the `sendErrorEmail()` call in the error handler
+3. Update the recipient email address in both functions
+
+```javascript
+// In sendCompletionEmail and sendErrorEmail functions:
+const recipient = 'your-email@example.com'; // Change this to your email
+```
+
+### Important Notes
+
+- **First-time authorization**: Google requires authorization when you first enable auto-refresh
+- **Time zone**: The trigger runs at 6:00 AM in the script's time zone (check your Apps Script project settings)
+- **Execution limits**: Google Apps Script has daily execution limits (typically 90 minutes/day for consumer accounts, 6 hours/day for Workspace accounts)
+- **Manual sync still available**: You can still run manual syncs anytime from the menu
+
+---
+
 ## 🧮 Business Logic
 
 ### Fiscal Year Definition
