@@ -38,11 +38,17 @@ function updateLastModifiedForExistingDeals() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getActiveSheet();
   const data = sheet.getDataRange().getValues();
-  
+
+  initProgressLogger('Update_Last_Modified');
+  const progressSheet = getOrCreateProgressSheet(ss);
+  updateProgressSheet(progressSheet, 'Starting Last Modified Date update', 'INFO');
+
   Logger.log(`--- [START] Update Last Modified for Sheet: ${sheet.getName()} ---`);
-  
+  updateProgressSheet(progressSheet, `Processing sheet: ${sheet.getName()}`, 'INFO');
+
   if (data.length <= 2) {
     Logger.log('!!! Error: Sheet has no data rows (only headers).');
+    updateProgressSheet(progressSheet, 'Error: Sheet has no data rows (only headers)', 'ERROR');
     SpreadsheetApp.getUi().alert('No data found in the active sheet below the headers.');
     return;
   }
@@ -80,11 +86,16 @@ function updateLastModifiedForExistingDeals() {
 
   const updateMap = {};
   const batchSize = 100;
+  const totalBatches = Math.ceil(dealIds.length / batchSize);
+
+  updateProgressSheet(progressSheet, `Total deals to check: ${dealIds.length} in ${totalBatches} batches`, 'INFO');
 
   try {
     for (let i = 0; i < dealIds.length; i += batchSize) {
       const chunk = dealIds.slice(i, i + batchSize);
-      Logger.log(`[BATCH] Processing chunk ${Math.floor(i/batchSize) + 1} (${chunk.length} IDs)`);
+      const batchNum = Math.floor(i/batchSize) + 1;
+      Logger.log(`[BATCH] Processing chunk ${batchNum} (${chunk.length} IDs)`);
+      updateProgressSheet(progressSheet, `Processing batch ${batchNum}/${totalBatches} (${chunk.length} deal IDs)`, 'INFO');
 
       const payload = {
         filterGroups: [{
@@ -135,6 +146,7 @@ function updateLastModifiedForExistingDeals() {
     }
 
     Logger.log('[STORAGE] Writing updated timestamps to Column K...');
+    updateProgressSheet(progressSheet, 'Writing updated timestamps to sheet', 'INFO');
     const newDateValues = data.slice(2).map(row => {
       const id = row[idIndex] ? row[idIndex].toString().trim() : '';
       return [updateMap[id] || row[modifiedDateIndex]];
@@ -142,9 +154,11 @@ function updateLastModifiedForExistingDeals() {
 
     sheet.getRange(3, modifiedDateIndex + 1, newDateValues.length, 1).setValues(newDateValues);
     Logger.log('--- [FINISH] Update Complete ---');
+    updateProgressSheet(progressSheet, `Update complete. Processed ${Object.keys(updateMap).length} deals`, 'SUCCESS');
     SpreadsheetApp.getUi().alert(`Last Modified Dates updated successfully.`);
   } catch (error) {
     Logger.log(`[CRITICAL] Error in update function: ${error.message}`);
+    updateProgressSheet(progressSheet, `Error: ${error.message}`, 'ERROR');
     SpreadsheetApp.getUi().alert('Error updating dates: ' + error.message);
   }
 }
@@ -156,14 +170,14 @@ function syncHubSpotDeals() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   initProgressLogger('HubSpot_Import');
   const progressSheet = getOrCreateProgressSheet(ss);
-  updateProgressSheet(progressSheet, 'Starting HubSpot deal sync.');
-  
+  updateProgressSheet(progressSheet, 'Starting HubSpot deal sync.', 'INFO');
+
   try {
     Logger.log('--- [START] Syncing New/Updated Deals from HubSpot ---');
     const lastUpdated = getLastUpdatedTimestamp(ss);
     const startTimestamp = parseFlexibleDate(lastUpdated);
     Logger.log(`[QUERY] Syncing deals modified since: ${startTimestamp.toISOString()}`);
-    updateProgressSheet(progressSheet, `Syncing deals modified since: ${startTimestamp.toISOString()}`);
+    updateProgressSheet(progressSheet, `Syncing deals modified since: ${startTimestamp.toISOString()}`, 'INFO');
     
     let after = null;
     let totalSynced = 0;
@@ -171,8 +185,8 @@ function syncHubSpotDeals() {
 
     do {
       Logger.log(`[FETCH] Fetching batch (Current Total: ${totalSynced})...`);
-      updateProgressSheet(progressSheet, `Fetching batch ${batchNumber} (Current Total: ${totalSynced})...`);
-      
+      updateProgressSheet(progressSheet, `Fetching batch ${batchNumber} (Synced so far: ${totalSynced})`, 'INFO');
+
       const payload = {
         filterGroups: [{
           filters: [
@@ -193,30 +207,36 @@ function syncHubSpotDeals() {
 
       const data = JSON.parse(response.getContentText());
       const deals = data.results || [];
-      
+
       if (deals.length > 0) {
         Logger.log(`[PROCESS] Processing ${deals.length} deals in this batch.`);
-        updateProgressSheet(progressSheet, `Processing ${deals.length} deals in batch ${batchNumber}.`);
+        updateProgressSheet(progressSheet, `Processing ${deals.length} deals in batch ${batchNumber}`, 'INFO');
         const grouped = groupDealsByPipeline(deals);
+
+        // Log deals per pipeline
+        Object.keys(grouped).forEach(sheetName => {
+          updateProgressSheet(progressSheet, `${sheetName}: ${grouped[sheetName].length} deals`, 'INFO');
+        });
+
         Object.keys(grouped).forEach(sheetName => {
           streamBatchToSheet(ss, sheetName, grouped[sheetName]);
         });
         totalSynced += deals.length;
       } else {
-        updateProgressSheet(progressSheet, `No deals returned in batch ${batchNumber}.`);
+        updateProgressSheet(progressSheet, `No deals returned in batch ${batchNumber}`, 'INFO');
       }
       after = data.paging?.next?.after || null;
       batchNumber += 1;
-      Utilities.sleep(300); 
+      Utilities.sleep(300);
     } while (after);
-    
+
     finalizeSheets(ss);
     Logger.log(`--- [FINISH] Stream Sync Complete. Total Deals Synced: ${totalSynced} ---`);
-    updateProgressSheet(progressSheet, `Sync complete. Total Deals Synced: ${totalSynced}.`);
+    updateProgressSheet(progressSheet, `Sync complete. Total deals synced: ${totalSynced}`, 'SUCCESS');
     SpreadsheetApp.getUi().alert('Sync Complete. Check logs for details.');
   } catch (error) {
     Logger.log(`[CRITICAL] Sync Error: ${error.message}`);
-    updateProgressSheet(progressSheet, `Sync error: ${error.message}`);
+    updateProgressSheet(progressSheet, `Sync error: ${error.message}`, 'ERROR');
     SpreadsheetApp.getUi().alert('Sync Error: ' + error.message);
   }
 }
@@ -259,6 +279,10 @@ function syncMissingCompanies() {
   const pipelines = Object.values(CONFIG.PIPELINE_MAP);
   let totalUpdated = 0;
 
+  initProgressLogger('Company_Sync');
+  const progressSheet = getOrCreateProgressSheet(ss);
+  updateProgressSheet(progressSheet, 'Starting company association sync', 'INFO');
+
   Logger.log('--- [START] Company Association Sync ---');
 
   pipelines.forEach(sheetName => {
@@ -286,11 +310,17 @@ function syncMissingCompanies() {
 
     if (missing.length > 0) {
       Logger.log(`[INFO] Found ${missing.length} deals missing company info in ${sheetName}`);
+      updateProgressSheet(progressSheet, `${sheetName}: ${missing.length} deals missing company info`, 'INFO');
+
+      const totalBatches = Math.ceil(missing.length / 100);
       for (let i = 0; i < missing.length; i += 100) {
         const batch = missing.slice(i, i + 100);
+        const batchNum = Math.floor(i / 100) + 1;
         const batchIds = batch.map(item => item.id);
+
+        updateProgressSheet(progressSheet, `${sheetName} batch ${batchNum}/${totalBatches}: ${batch.length} deals`, 'INFO');
         const associations = callHubSpotBatchAssociations(batchIds, 'companies');
-        
+
         batch.forEach((item) => {
           const foundId = associations[item.id];
           if (foundId) {
@@ -311,12 +341,17 @@ function syncMissingCompanies() {
     }
   });
   Logger.log(`--- [FINISH] Company Sync. Total Checked: ${totalUpdated} ---`);
+  updateProgressSheet(progressSheet, `Company sync complete. Total checked: ${totalUpdated}`, 'SUCCESS');
 }
 
 function syncMissingContacts() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const pipelines = Object.values(CONFIG.PIPELINE_MAP);
   let totalUpdated = 0;
+
+  initProgressLogger('Contact_Sync');
+  const progressSheet = getOrCreateProgressSheet(ss);
+  updateProgressSheet(progressSheet, 'Starting contact association sync', 'INFO');
 
   Logger.log('--- [START] Contact Association Sync ---');
 
@@ -337,20 +372,27 @@ function syncMissingContacts() {
 
     if (missing.length > 0) {
       Logger.log(`[INFO] Found ${missing.length} deals missing contact info in ${sheetName}`);
+      updateProgressSheet(progressSheet, `${sheetName}: ${missing.length} deals missing contact info`, 'INFO');
+
+      const totalBatches = Math.ceil(missing.length / 100);
       for (let i = 0; i < missing.length; i += 100) {
         const batch = missing.slice(i, i + 100);
+        const batchNum = Math.floor(i / 100) + 1;
         const batchIds = batch.map(item => item.id);
+
+        updateProgressSheet(progressSheet, `${sheetName} batch ${batchNum}/${totalBatches}: ${batch.length} deals`, 'INFO');
         const associations = callHubSpotBatchAssociations(batchIds, 'contacts');
-        
+
         batch.forEach((item) => {
           sheet.getRange(item.row, CONTACT_ID_COL + 1).setValue(associations[item.id] || "N/A");
         });
         totalUpdated += batch.length;
-        Utilities.sleep(300); 
+        Utilities.sleep(300);
       }
     }
   });
   Logger.log(`--- [FINISH] Contact Sync complete ---`);
+  updateProgressSheet(progressSheet, `Contact sync complete. Total checked: ${totalUpdated}`, 'SUCCESS');
 }
 
 /**

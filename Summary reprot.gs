@@ -106,34 +106,40 @@ function generateSummaryReport() {
   // Initialize progress logger
   initProgressLogger('Summary_Report');
   logStart('Summary Revenue Report');
-  
+
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-  
+  const progressSheet = getOrCreateProgressSheet(ss);
+  updateProgressSheet(progressSheet, 'Starting Summary Report generation', 'INFO');
+
   // Attempt to grab the sheets
   const sourceSheet = ss.getSheetByName(SUMMARY_CONFIG.SOURCE_SHEET);
   const configSheet = ss.getSheetByName(SUMMARY_CONFIG.CONFIG_SHEET);
-  
+
   // CRITICAL CHECK: If the input data is missing, we must stop.
   if (!sourceSheet) {
     const errorMsg = `CRITICAL ERROR: The source data sheet "${SUMMARY_CONFIG.SOURCE_SHEET}" was not found. Please ensure it exists.`;
     logError(errorMsg);
+    updateProgressSheet(progressSheet, errorMsg, 'ERROR');
     throw new Error(errorMsg);
   }
   if (!configSheet) {
     const errorMsg = `CRITICAL ERROR: The configuration sheet "${SUMMARY_CONFIG.CONFIG_SHEET}" was not found.`;
     logError(errorMsg);
+    updateProgressSheet(progressSheet, errorMsg, 'ERROR');
     throw new Error(errorMsg);
   }
 
   logInfo(`Reading data from ${SUMMARY_CONFIG.SOURCE_SHEET} sheet`);
   logInfo(`Using configuration from ${SUMMARY_CONFIG.CONFIG_SHEET} sheet`);
+  updateProgressSheet(progressSheet, `Reading data from ${SUMMARY_CONFIG.SOURCE_SHEET}`, 'INFO');
 
   const startVal = configSheet.getRange(SUMMARY_CONFIG.REPORT_START_CELL).getValue();
   const endVal = configSheet.getRange(SUMMARY_CONFIG.REPORT_END_CELL).getValue();
-  
+
   if (!startVal || !endVal) {
     const errorMsg = "Error: Dates are missing in E8/E9 of the Config sheet.";
     logError(errorMsg);
+    updateProgressSheet(progressSheet, errorMsg, 'ERROR');
     SpreadsheetApp.getUi().alert(errorMsg);
     return;
   }
@@ -145,12 +151,13 @@ function generateSummaryReport() {
   logInfo(`Report Start: ${formatDateToISO(startDate)}`);
   logInfo(`Report End: ${formatDateToISO(endDate)}`);
   logInfo(`Report FY: ${reportFY}`);
+  updateProgressSheet(progressSheet, `Report period: ${formatDateToISO(startDate)} to ${formatDateToISO(endDate)} (FY: ${reportFY})`, 'INFO');
 
   const data = sourceSheet.getDataRange().getValues();
   const rows = data.slice(1);
-  
+
   logInfo(`Loaded ${rows.length} data rows`);
-  
+  updateProgressSheet(progressSheet, `Loaded ${rows.length} deals from TEMP_DATA`, 'INFO');
   const pivotMap = {};
   const allMonths = new Set();
   const globalHistory = {}; 
@@ -198,19 +205,21 @@ function generateSummaryReport() {
   const sortedMonths = Array.from(allMonths).sort((a,b) => new Date(a) - new Date(b));
   const dynamicHeaders = SUMMARY_CONFIG.EXTRA_COLUMNS.map(c => c.header);
   const headers = ["Company Name", ...dynamicHeaders, ...sortedMonths, "Realized Revenue (FY)", "Total Revenue"];
-  
+
   let sortedData = Object.values(pivotMap).sort((a, b) => {
     const fyA = a.tempRow[18] || "";
     const fyB = b.tempRow[18] || "";
     return fyA !== fyB ? fyA.localeCompare(fyB) : a.name.localeCompare(b.name);
   });
 
+  updateProgressSheet(progressSheet, `Aggregated ${Object.keys(pivotMap).length} companies across ${sortedMonths.length} months`, 'INFO');
+
   // C) BUILD ARRAY
   const finalOutput = [headers];
   sortedData.forEach(p => {
     const row = [p.name];
     SUMMARY_CONFIG.EXTRA_COLUMNS.forEach(col => {
-      if (col.isSparkline) row.push(""); 
+      if (col.isSparkline) row.push("");
       else if (col.isVirtual) row.push(calculatePOCTag(p, globalHistory[p.name]));
       else row.push(p.tempRow[col.index]);
     });
@@ -221,7 +230,8 @@ function generateSummaryReport() {
 
   // D) WRITE & FORMAT
   writeAndFormatSummary(ss, finalOutput, sortedMonths, reportFY);
-  
+  updateProgressSheet(progressSheet, `Summary Report complete. ${finalOutput.length - 1} companies written`, 'SUCCESS');
+
   logSuccess(`✅ Summary Report completed: ${finalOutput.length - 1} companies processed`);
   printExecutionSummary();
 }

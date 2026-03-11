@@ -81,14 +81,22 @@ function tempUpdateTempSheet() {
   const startTime = new Date();
   const originalSheet = ss.getActiveSheet();
 
+  initProgressLogger('Temp_Sheet_Update');
+  const progressSheet = getOrCreateProgressSheet(ss);
+  updateProgressSheet(progressSheet, 'Starting TEMP_DATA sheet update', 'INFO');
+
   // 1. Setup Dates & Teams
   const configSheet = ss.getSheetByName(tempCONFIG.CONFIG_SHEET_NAME);
   const reportDateVal = configSheet ? configSheet.getRange(tempCONFIG.REPORT_DATE_CELL).getValue() : null;
   const reportDate = tempIsValidDate(reportDateVal) ? new Date(reportDateVal) : new Date();
   const currentFY = tempGetFiscalYear(reportDate);
 
+  updateProgressSheet(progressSheet, `Fiscal Year: ${currentFY}, Report Date: ${reportDate.toDateString()}`, 'INFO');
+
   const salesTeam = tempGetTeamList(ss, tempCONFIG.SALES_TEAM_SHEET);
   const csTeam = tempGetTeamList(ss, tempCONFIG.CS_TEAM_SHEET);
+
+  updateProgressSheet(progressSheet, `Sales team members: ${salesTeam.length}, CS team members: ${csTeam.length}`, 'INFO');
 
   const allData = [];
   const paymentDeals = [];
@@ -105,6 +113,8 @@ function tempUpdateTempSheet() {
 
     const rawRows = fullData.slice(tempCONFIG.PIPELINE_HEADER_ROW);
     const uniqueMap = {};
+
+    updateProgressSheet(progressSheet, `Processing ${sheetName}: ${rawRows.length} raw rows`, 'INFO');
   
     rawRows.forEach(row => {
       const dealId = row[8];
@@ -138,10 +148,14 @@ function tempUpdateTempSheet() {
     const processedRows = Object.values(uniqueMap);
     if (sheetName === tempCONFIG.PAYMENT_SHEET_NAME) paymentDeals.push(...processedRows);
     allData.push(...processedRows.map(row => ({ data: row, source: sheetName })));
+
+    updateProgressSheet(progressSheet, `${sheetName}: ${processedRows.length} unique deals after deduplication`, 'INFO');
   });
 
   // Calculate stats using the hierarchical grouping logic
+  updateProgressSheet(progressSheet, `Calculating stats for ${paymentDeals.length} payment deals`, 'INFO');
   const companyStats = tempCalculateCompanyStats(paymentDeals);
+  updateProgressSheet(progressSheet, `Stats calculated for ${Object.keys(companyStats).length} companies`, 'INFO');
   
   // Updated headers with all necessary columns
   const updatedHeaders = [...tempOUTPUT_HEADERS, 
@@ -157,6 +171,8 @@ function tempUpdateTempSheet() {
   const finalOutput = [updatedHeaders];
 
   // 3. Second Pass: Build Final Output
+  updateProgressSheet(progressSheet, `Building final output for ${allData.length} deals`, 'INFO');
+
   allData.forEach(item => {
     const row = item.data;
     
@@ -214,6 +230,8 @@ function tempUpdateTempSheet() {
   });
 
   // 4. Write to TEMP Sheet
+  updateProgressSheet(progressSheet, `Writing ${finalOutput.length} rows to TEMP_DATA sheet`, 'INFO');
+
   let tempSheet = ss.getSheetByName(tempCONFIG.TEMP_SHEET_NAME);
   if (tempSheet) ss.deleteSheet(tempSheet);
   tempSheet = ss.insertSheet(tempCONFIG.TEMP_SHEET_NAME);
@@ -223,9 +241,13 @@ function tempUpdateTempSheet() {
   const totalRows = finalOutput.length;
   const totalCols = updatedHeaders.length;  // Ensure columns match header length
 
+  const totalBatches = Math.ceil(totalRows / tempCONFIG.BATCH_SIZE);
   for (let i = 0; i < totalRows; i += tempCONFIG.BATCH_SIZE) {
     const currentBatchSize = Math.min(tempCONFIG.BATCH_SIZE, totalRows - i);
     const batchData = finalOutput.slice(i, i + currentBatchSize);
+    const batchNum = Math.floor(i / tempCONFIG.BATCH_SIZE) + 1;
+
+    updateProgressSheet(progressSheet, `Writing batch ${batchNum}/${totalBatches} (${currentBatchSize} rows)`, 'INFO');
     tempSheet.getRange(i + 1, 1, currentBatchSize, totalCols).setValues(batchData);
   }
 
@@ -233,7 +255,10 @@ function tempUpdateTempSheet() {
   tempSheet.getRange(1, 1, 1, totalCols).setFontWeight("bold");
 
   const endTime = new Date();
-  console.log(`Success! Total Time: ${(endTime - startTime)/1000} seconds.`);
+  const duration = ((endTime - startTime)/1000).toFixed(2);
+  console.log(`Success! Total Time: ${duration} seconds.`);
+
+  updateProgressSheet(progressSheet, `TEMP_DATA update complete. ${totalRows - 1} deals written in ${duration}s`, 'SUCCESS');
 }
 
 /**
