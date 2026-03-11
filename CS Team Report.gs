@@ -152,28 +152,33 @@ function CS_forecastRevenue() {
  // Initialize progress logger
  initProgressLogger('CS_Team_Report');
  logStart('CS Team Revenue Forecast Report');
- 
+
  const ss = SpreadsheetApp.getActiveSpreadsheet();
+ const progressSheet = getOrCreateProgressSheet(ss);
+ updateProgressSheet(progressSheet, 'Starting CS Team Report generation', 'INFO');
+
  const sourceSheet = ss.getSheetByName(CSSUMMARY_CONFIG.SOURCE_SHEET);
  const configSheet = ss.getSheetByName(CSSUMMARY_CONFIG.CONFIG_SHEET);
 
  if (!sourceSheet || !configSheet) {
    const errorMsg = "Required sheets not found.";
    logError(errorMsg);
+   updateProgressSheet(progressSheet, errorMsg, 'ERROR');
    throw new Error(errorMsg);
  }
 
  logInfo(`Reading data from ${CSSUMMARY_CONFIG.SOURCE_SHEET} sheet`);
  logInfo(`Using configuration from ${CSSUMMARY_CONFIG.CONFIG_SHEET} sheet`);
+ updateProgressSheet(progressSheet, `Reading data from ${CSSUMMARY_CONFIG.SOURCE_SHEET}`, 'INFO');
 
  // 1. DATES & FY BOUNDARIES
  const rawReportDate = new Date(configSheet.getRange(CSSUMMARY_CONFIG.REPORT_DATE_CELL).getValue());
  const reportDate = new Date(rawReportDate.getFullYear(), rawReportDate.getMonth(), 1);
- 
+
  let fyStartYear = reportDate.getMonth() >= CSSUMMARY_CONFIG.FY_START_MONTH ? reportDate.getFullYear() : reportDate.getFullYear() - 1;
  const currentFYStart = new Date(fyStartYear, CSSUMMARY_CONFIG.FY_START_MONTH, 1);
  const currentFYEnd = new Date(fyStartYear + 1, CSSUMMARY_CONFIG.FY_START_MONTH - 1, 1);
- 
+
  const rawEndDate = new Date(configSheet.getRange(CSSUMMARY_CONFIG.REPORT_END_CELL).getValue());
  const reportEndDate = new Date(rawEndDate.getFullYear(), rawEndDate.getMonth(), 1);
  const priorMonthDate = new Date(reportDate.getFullYear(), reportDate.getMonth() - 1, 1);
@@ -181,13 +186,15 @@ function CS_forecastRevenue() {
  logInfo(`Report Date: ${formatDateToISO(reportDate)}`);
  logInfo(`Report End Date: ${formatDateToISO(reportEndDate)}`);
  logInfo(`Current FY: ${getFYString(reportDate)}`);
+ updateProgressSheet(progressSheet, `Report Date: ${formatDateToISO(reportDate)}, End: ${formatDateToISO(reportEndDate)}`, 'INFO');
 
  // 2. LOAD DATA
  const allData = sourceSheet.getDataRange().getValues();
  const rawHeaders = allData[0];
  const dataRows = allData.slice(1);
- 
- logInfo(`Loaded ${dataRows.length} data rows from source sheet`);
+
+  logInfo(`Loaded ${dataRows.length} data rows from source sheet`);
+  updateProgressSheet(progressSheet, `Loaded ${dataRows.length} companies from Summary Report`, 'INFO');
 
  // 3. GENERATE HEADERS
  const existingMonths = [];
@@ -269,8 +276,11 @@ function CS_forecastRevenue() {
  finalOutput.sort((a, b) => String(a[0]).localeCompare(String(b[0])));
  finalOutput.unshift(headerRow);
 
+ updateProgressSheet(progressSheet, `Processing ${finalOutput.length - 1} CS-owned companies`, 'INFO');
+
  writeAndFormatSummaryCS(ss, finalOutput, sortedMonths, currentFYStart, reportDate);
- 
+ updateProgressSheet(progressSheet, `CS Team Report complete. ${finalOutput.length - 1} companies written`, 'SUCCESS');
+
  logSuccess(`✅ CS Team Report completed: ${finalOutput.length - 1} companies processed`);
  printExecutionSummary();
 }

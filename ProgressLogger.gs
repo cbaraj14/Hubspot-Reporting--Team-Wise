@@ -2,25 +2,35 @@
 * ============================================================================
 * UNIFIED PROGRESS LOGGER - SINGLE SOURCE OF TRUTH
 * ============================================================================
-* 
-* Provides consistent, timestamped logging across all modules.
-* 
+*
+* Provides consistent, timestamped logging across all modules with sheet integration.
+*
 * FEATURES:
 * - Timestamped log entries with milliseconds precision
 * - Multiple log levels (SUCCESS, DEBUG, INFO, WARN, ERROR)
 * - Unicode symbols for quick visual identification
 * - Module identification for debugging
 * - Consistent formatting across all reports
-* 
+* - Progress Sheet integration with 2500 log limit (newest at top)
+* - Automatic log rotation to maintain performance
+*
+* PROGRESS SHEET:
+* - Column Headers: Timestamp | Module | Type | Message
+* - Maximum 2500 log entries retained (1 header + 2500 logs)
+* - Newest entries always at row 2 (below header)
+* - Automatic cleanup of old entries when limit exceeded
+* - Created automatically on first use if not exists
+*
 * USAGE:
 * - Initialize: initProgressLogger('Module_Name')
 * - Log levels: logSuccess(), logInfo(), logDebug(), logWarn(), logError()
-* - Progress: updateProgress() with automatic timestamp
-* 
+* - Progress sheet: updateProgressSheet(sheet, message, type)
+* - Operation logging: logOperation(), logTotalCount(), logBatchStart()
+*
 * OUTPUT FORMAT:
 * 2026-02-16 14:33:12.345    Module_Name    SUCCESS    ✅ Operation completed successfully
 * 2026-02-16 14:33:11.123    Module_Name    DEBUG    🔍 Processing item: 42
-* 
+*
 * ============================================================================
 */
 
@@ -164,21 +174,81 @@ function logEnd(operationName, details = '') {
  */
 function updateProgress(module, status, current = null, total = null) {
   let message = status;
-  
+
   if (current !== null && total !== null) {
     const percentage = total > 0 ? Math.round((current / total) * 100) : 0;
     message = `${status} (${current}/${total} - ${percentage}%)`;
   }
-  
+
   return logInfo(message);
+}
+
+/**
+ * Log operation status (what's happening)
+ * @param {string} operation - Description of current operation
+ */
+function logOperation(operation) {
+  return logInfo(operation);
+}
+
+/**
+ * Log total count being processed
+ * @param {string} itemType - Type of items (deals, companies, etc.)
+ * @param {number} totalCount - Total count to process
+ */
+function logTotalCount(itemType, totalCount) {
+  return logInfo(`Total ${itemType} to process: ${totalCount}`);
+}
+
+/**
+ * Log batch information
+ * @param {number} batchNumber - Current batch number
+ * @param {number} batchCount - Number of items in this batch
+ * @param {number} totalBatches - Total number of batches (optional)
+ */
+function logBatchStart(batchNumber, batchCount, totalBatches = null) {
+  let message = `Starting batch ${batchNumber} with ${batchCount} items`;
+  if (totalBatches) {
+    message += ` (of ${totalBatches} total batches)`;
+  }
+  return logInfo(message);
+}
+
+/**
+ * Log pipeline deals count
+ * @param {string} pipelineName - Name of the pipeline
+ * @param {number} dealCount - Number of deals in pipeline
+ */
+function logPipelineDeals(pipelineName, dealCount) {
+  return logInfo(`${pipelineName}: ${dealCount} deals`);
+}
+
+/**
+ * Log error with details
+ * @param {string} operation - Operation that failed
+ * @param {string} errorDetails - Error message or details
+ */
+function logOperationError(operation, errorDetails) {
+  return logError(`Error in ${operation}: ${errorDetails}`);
+}
+
+/**
+ * Log successful completion
+ * @param {string} operation - Operation that completed
+ * @param {string} details - Additional details (optional)
+ */
+function logOperationSuccess(operation, details = '') {
+  const message = details ? `${operation} completed successfully. ${details}` : `${operation} completed successfully`;
+  return logSuccess(message);
 }
 
 /**
  * Progress update for sheet operations
  * @param {Sheet} sheet - Progress sheet
  * @param {string} message - Progress message
+ * @param {string} type - Log type (INFO, SUCCESS, WARN, ERROR) - defaults to INFO
  */
-function updateProgressSheet(sheet, message) {
+function updateProgressSheet(sheet, message, type = 'INFO') {
   let progressSheet = sheet;
   if (!progressSheet) {
     const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -191,21 +261,21 @@ function updateProgressSheet(sheet, message) {
   }
 
   ensureProgressSheetHeaders(progressSheet);
-  
+
   const timestamp = getCurrentTimestamp();
-  
+
   try {
     progressSheet.insertRows(2, 1);
-    
-    const rowValues = [[timestamp, PROGRESS_STATE.moduleName, 'INFO', message]];
+
+    const rowValues = [[timestamp, PROGRESS_STATE.moduleName, type, message]];
     progressSheet.getRange(2, 1, 1, rowValues[0].length).setValues(rowValues);
-    
-    const maxRows = 1001;
+
+    const maxRows = 2501; // 2500 logs + 1 header row
     const lastRow = progressSheet.getLastRow();
     if (lastRow > maxRows) {
       progressSheet.deleteRows(maxRows + 1, lastRow - maxRows);
     }
-    
+
     logInfo(`Progress updated: ${message}`);
   } catch (error) {
     logError(`Failed to update progress sheet: ${error.message}`);
@@ -230,7 +300,7 @@ function getOrCreateProgressSheet(ss) {
 }
 
 function ensureProgressSheetHeaders(progressSheet) {
-  const headers = ['Timestamp', 'Module', 'Type', 'Progress'];
+  const headers = ['Timestamp', 'Module', 'Type', 'Message'];
   const currentHeaders = progressSheet.getRange(1, 1, 1, headers.length).getValues()[0];
   const needsHeaders = headers.some((header, index) => currentHeaders[index] !== header);
 
@@ -298,12 +368,12 @@ function writeLogsToSheet(ss) {
     progressSheet.insertRows(2, orderedLogs.length);
     progressSheet.getRange(2, 1, orderedLogs.length, 4).setValues(orderedLogs);
 
-    const maxRows = 1001;
+    const maxRows = 2501; // 2500 logs + 1 header row
     const lastRow = progressSheet.getLastRow();
     if (lastRow > maxRows) {
       progressSheet.deleteRows(maxRows + 1, lastRow - maxRows);
     }
-    
+
     logSuccess(`Wrote ${logs.length} log entries to progress sheet`);
   } catch (error) {
     logError(`Failed to write logs to sheet: ${error.message}`);

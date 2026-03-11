@@ -142,8 +142,11 @@ function salesGenerateSalesTeamReport() {
   // Initialize progress logger
   initProgressLogger('Sales_Team_Report');
   logStart('Sales Team Revenue Report');
-  
+
   const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const progressSheet = getOrCreateProgressSheet(ss);
+  updateProgressSheet(progressSheet, 'Starting Sales Team Report generation', 'INFO');
+
   const sourceSheet = ss.getSheetByName(SALES_REPORT_CONFIG.SOURCE_SHEET);
   const configSheet = ss.getSheetByName(SALES_REPORT_CONFIG.CONFIG_SHEET);
   const stopSheet = ss.getSheetByName(SALES_REPORT_CONFIG.STOP_LIST_SHEET);
@@ -151,11 +154,13 @@ function salesGenerateSalesTeamReport() {
   if (!sourceSheet || !configSheet) {
     const errorMsg = "Source or Config sheet missing.";
     logError(errorMsg);
+    updateProgressSheet(progressSheet, errorMsg, 'ERROR');
     throw new Error(errorMsg);
   }
 
   logInfo(`Reading data from ${SALES_REPORT_CONFIG.SOURCE_SHEET} sheet`);
   logInfo(`Using configuration from ${SALES_REPORT_CONFIG.CONFIG_SHEET} sheet`);
+  updateProgressSheet(progressSheet, `Reading data from ${SALES_REPORT_CONFIG.SOURCE_SHEET}`, 'INFO');
 
   // Load Configurations
   const startDate = new Date(configSheet.getRange(SALES_REPORT_CONFIG.START_DATE_CELL).getValue());
@@ -168,12 +173,14 @@ function salesGenerateSalesTeamReport() {
   logInfo(`Report End: ${formatDateToISO(endDate)}`);
   logInfo(`Report Date: ${formatDateToISO(reportDate)}`);
   logInfo(`Report FY: ${reportFY}`);
+  updateProgressSheet(progressSheet, `Report period: ${formatDateToISO(startDate)} to ${formatDateToISO(endDate)} (FY: ${reportFY})`, 'INFO');
 
   // Dynamic Pipeline Logic: Pull from E18, fallback to "Payment Pipeline" if empty
   const targetPipelineRaw = configSheet.getRange(SALES_REPORT_CONFIG.TARGET_PIPELINE_CELL).getValue();
   const targetPipeline = targetPipelineRaw ? targetPipelineRaw.toString().trim() : SALES_REPORT_CONFIG.DEFAULT_PIPELINE;
-  
+
   logInfo(`Target Pipeline: ${targetPipeline}`);
+  updateProgressSheet(progressSheet, `Target pipeline: ${targetPipeline}`, 'INFO');
   
   // FY Boundaries for Forecast logic
   let fyStartYear = reportDate.getMonth() >= 6 ? reportDate.getFullYear() : reportDate.getFullYear() - 1;
@@ -208,6 +215,7 @@ function salesGenerateSalesTeamReport() {
   });
 
   logInfo(`Grouped into ${Object.keys(companyGroups).length} companies`);
+  updateProgressSheet(progressSheet, `Grouped ${Object.keys(companyGroups).length} companies from ${allData.length} deals`, 'INFO');
 
   const pivotMap = {};
   const allMonths = new Set();
@@ -220,6 +228,7 @@ function salesGenerateSalesTeamReport() {
   }
 
   // B) APPLY FILTERS & AGGREGATE
+  updateProgressSheet(progressSheet, `Applying filters and aggregating data`, 'INFO');
   let processedCount = 0;
   for (const companyName in companyGroups) {
     const deals = companyGroups[companyName];
@@ -290,11 +299,13 @@ function salesGenerateSalesTeamReport() {
       }
     });
   }
-  
+
   logInfo(`Processed ${processedCount} companies, ${Object.keys(pivotMap).length} matched filters`);
+  updateProgressSheet(progressSheet, `Filters applied. ${Object.keys(pivotMap).length} companies matched`, 'INFO');
 
   salesRenderReport(ss, pivotMap, allMonths, reportFY, reportDate, currentFYStart, currentFYEnd, filterH_months);
-  
+  updateProgressSheet(progressSheet, `Sales Team Report complete. ${Object.keys(pivotMap).length} companies written`, 'SUCCESS');
+
   logSuccess(`✅ Sales Team Report completed: ${Object.keys(pivotMap).length} companies processed`);
   printExecutionSummary();
 }
